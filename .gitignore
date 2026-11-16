@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+.env
+.env.*
+!.env.example
+# Local configuration and dictionaries may contain real customer names. Never commit them.
+aliasgate.yaml
+dictionary*.yaml
+!examples/**
+.DS_Store
+.idea/
+.vscode/
