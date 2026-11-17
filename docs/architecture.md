@@ -73,7 +73,8 @@ Input: all spans for one text. Output: a list of non-overlapping spans sorted by
 
 1. Drop spans where `start >= end`.
 2. Sort by `priority` descending, then `score` descending, then length descending, then `start`
-   ascending, then `entity_type` ascending (the last key only makes the order total).
+   ascending, then `entity_type` ascending, then `source` ascending (the last two keys only make
+   the order total, so the result does not depend on the order of the input).
 3. Walk the sorted list; accept a span if it does not overlap any accepted span. Two spans
    overlap when `a.start < b.end and b.start < a.end`.
 4. Return accepted spans sorted by `start`.
