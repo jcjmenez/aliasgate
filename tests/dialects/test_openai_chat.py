@@ -630,8 +630,3 @@ def test_error_body_has_the_openai_error_shape() -> None:
             "code": "unsupported_content",
         }
     }
-
-
-def test_stream_transformer_is_not_implemented_yet() -> None:
-    with pytest.raises(NotImplementedError):
-        DIALECT.stream_transformer(_mapping())

@@ -1,0 +1,111 @@
+[
+  {
+    "id": "chatcmpl-example0002",
+    "object": "chat.completion.chunk",
+    "created": 1763380800,
+    "model": "gpt-example",
+    "system_fingerprint": "fp_example",
+    "choices": [
+      {
+        "index": 0,
+        "delta": {
+          "role": "assistant",
+          "content": "Hi [PER"
+        },
+        "logprobs": null,
+        "finish_reason": null
+      },
+      {
+        "index": 1,
+        "delta": {
+          "role": "assistant",
+          "content": "Yo [ORG"
+        },
+        "logprobs": null,
+        "finish_reason": null
+      }
+    ]
+  },
+  {
+    "id": "chatcmpl-example0002",
+    "object": "chat.completion.chunk",
+    "created": 1763380800,
+    "model": "gpt-example",
+    "system_fingerprint": "fp_example",
+    "choices": [
+      {
+        "index": 0,
+        "delta": {
+          "content": "SON_1]!"
+        },
+        "logprobs": null,
+        "finish_reason": null
+      }
+    ]
+  },
+  {
+    "id": "chatcmpl-example0002",
+    "object": "chat.completion.chunk",
+    "created": 1763380800,
+    "model": "gpt-example",
+    "system_fingerprint": "fp_example",
+    "choices": [
+      {
+        "index": 1,
+        "delta": {
+          "content": "_1]?"
+        },
+        "logprobs": null,
+        "finish_reason": null
+      }
+    ]
+  },
+  {
+    "id": "chatcmpl-example0002",
+    "object": "chat.completion.chunk",
+    "created": 1763380800,
+    "model": "gpt-example",
+    "system_fingerprint": "fp_example",
+    "choices": [
+      {
+        "index": 0,
+        "delta": {},
+        "logprobs": null,
+        "finish_reason": "stop"
+      }
+    ]
+  },
+  {
+    "id": "chatcmpl-example0002",
+    "object": "chat.completion.chunk",
+    "created": 1763380800,
+    "model": "gpt-example",
+    "system_fingerprint": "fp_example",
+    "choices": [
+      {
+        "index": 1,
+        "delta": {
+          "content": " [PERSON_1]"
+        },
+        "logprobs": null,
+        "finish_reason": null
+      }
+    ]
+  },
+  {
+    "id": "chatcmpl-example0002",
+    "object": "chat.completion.chunk",
+    "created": 1763380800,
+    "model": "gpt-example",
+    "system_fingerprint": "fp_example",
+    "choices": [
+      {
+        "index": 1,
+        "delta": {},
+        "logprobs": null,
+        "finish_reason": "stop"
+      }
+    ]
+  },
+  "[DONE]"
+]

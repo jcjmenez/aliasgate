@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Final, Literal, Protocol
 
+from aliasgate.dialects.sse import SSEEvent
 from aliasgate.engine import restore
 from aliasgate.mapping import Mapping
 
@@ -83,16 +84,20 @@ class MalformedRequestError(Exception):
 
 
 class StreamTransformer(Protocol):
-    """Restores one streamed response, event by event.
+    """Restores one streamed response, event by event, never emitting text it still holds.
 
-    Implemented in slice 07, which narrows the event type to `aliasgate.dialects.sse.SSEEvent`.
+    `unresolved` is the running count of placeholders left unrestored in emitted text.
     """
 
     unresolved: int
 
-    def feed(self, event: Any) -> list[Any]: ...
+    def feed(self, event: SSEEvent) -> list[SSEEvent]:
+        """The events to send in place of `event`, in order."""
+        ...
 
-    def end(self) -> list[Any]: ...
+    def end(self) -> list[SSEEvent]:
+        """Events carrying any held text; called when the upstream closes without [DONE]."""
+        ...
 
 
 class Dialect(Protocol):

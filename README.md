@@ -73,7 +73,7 @@ regulation. Read the [threat model](docs/threat-model.md) before relying on it.
 | 04 | Configuration and company dictionary | done |
 | 05 | OpenAI Chat Completions payload handling | done |
 | 06 | HTTP proxy (non-streaming) | done |
-| 07 | Streaming restoration | planned |
+| 07 | Streaming restoration | done |
 | 08 | Anthropic Messages dialect | planned |
 | 09 | ML detector (GLiNER) | planned |
 | 10 | Leak audit, policy, metrics | planned |
