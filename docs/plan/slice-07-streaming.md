@@ -139,6 +139,31 @@ In the request flow of slice 06, replace step 3. When `body.get("stream")` is tr
   `unresolved` count. (Found in slice 06: `_Gateway.dispatch` emits the line when the handler
   returns. A streamed response must skip that and emit from the generator's `finally`.)
 
+### Decisions made while implementing (slice 07)
+
+- The API check (openai-python 3.52.0 types, read 2026-11-17) found `delta.audio.transcript`.
+  Slice 05 restores `audio.transcript` in whole responses, so streams restore it too, on an
+  `"audio"` channel. Streamed deltas have no `custom` tool calls today. `custom.input` is still
+  handled, on its own `("custom", tool_index)` channel, because its escaping differs from
+  `("tool", tool_index)`.
+- A chunk without `choices` but with an `error` key (how providers report errors mid-stream)
+  goes through `restore_all_strings`, as error bodies do in slice 06. Every other chunk that
+  changes nothing is returned as the original event, so its bytes are kept.
+- `_RelayResponse(StreamingResponse)` in `proxy/app.py` owns the cleanup. In a `finally`, inside
+  `anyio.CancelScope(shield=True)`, it closes the body generator and the upstream, then logs
+  the request. The shield matters when an enclosing anyio cancel scope is cancelled: without
+  it, the awaits in the cleanup are cancelled too (a test fails without it). Starlette raises
+  `ClientDisconnect` for ASGI 2.4 servers, and it is swallowed. Any other send failure is
+  logged by class name. uvicorn announces ASGI 2.3, so a disconnect there cancels the generator.
+- The stream response replaces the upstream `content-type` and `cache-control` with
+  `text/event-stream` and `no-cache`, and keeps the other filtered headers.
+- If creating the transformer fails, the upstream is closed and the client gets
+  `500 internal_error`. The `streaming_not_supported` code is gone.
+- The SSE parser also strips a leading byte order mark and treats a line without a colon as a
+  field with an empty value, as the HTML standard says.
+- Tests cover a client disconnect by calling the ASGI app directly with `spec_version` 2.3 and
+  2.4, and an enclosing cancel scope with an anyio task group.
+
 ## Tests
 
 `test_stream.py` (mapping: `[PERSON_1]` → `Juan "JP" Pérez`, `[ORG_1]` → `ACME`)

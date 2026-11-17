@@ -35,13 +35,6 @@ def invalid_json() -> GatewayError:
     return GatewayError(400, "invalid_json", "Request body must be a JSON object encoded as UTF-8.")
 
 
-def streaming_not_supported() -> GatewayError:
-    """501 streaming_not_supported."""
-    return GatewayError(
-        501, "streaming_not_supported", "Streaming is not supported by this gateway version."
-    )
-
-
 def pseudonymization_failed() -> GatewayError:
     """500 pseudonymization_failed."""
     return GatewayError(

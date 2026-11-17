@@ -10,29 +10,33 @@ import sys
 import time
 import uuid
 from collections import Counter
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Final
 
+import anyio
 import anyio.to_thread
 import httpx
 from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.requests import ClientDisconnect, Request
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
+from starlette.types import Receive, Scope, Send
 
 from aliasgate.config import PolicySettings, Settings
 from aliasgate.dialects.base import (
     Dialect,
     MalformedRequestError,
     Policy,
+    StreamTransformer,
     UnsupportedContentError,
     restore_all_strings,
     slots_for_json_strings,
 )
 from aliasgate.dialects.openai_chat import OpenAIChatDialect
+from aliasgate.dialects.sse import SSEParser
 from aliasgate.engine import DetectionError, Pseudonymizer, count_unresolved
 from aliasgate.factory import build_pseudonymizer
 from aliasgate.mapping import Mapping
@@ -52,6 +56,7 @@ _UNKNOWN_ROUTE: Final = "unknown"
 # httpx logs every request URL at INFO, query string included; httpcore logs headers at DEBUG.
 _QUIET_LOGGERS: Final = ("httpx", "httpcore")
 _NOT_JSON: Final = object()
+_EVENT_STREAM: Final = "text/event-stream"
 
 
 class JsonFormatter(logging.Formatter):
@@ -99,6 +104,7 @@ class _RequestLog:
     slots: int = 0
     entities: dict[str, int] = field(default_factory=dict)
     unresolved_placeholders: int = 0
+    deferred: bool = False  # a streamed response writes the line itself, when the stream ends
 
     def emit(self, status: int) -> None:
         fields = {
@@ -160,8 +166,12 @@ def _loads(content: bytes) -> object:
         return _NOT_JSON
 
 
+def _media_type(content_type: str | None) -> str:
+    return (content_type or "").split(";", 1)[0].strip().lower()
+
+
 def _is_json(content_type: str | None) -> bool:
-    media_type = (content_type or "").split(";", 1)[0].strip().lower()
+    media_type = _media_type(content_type)
     return media_type == "application/json" or media_type.endswith("+json")
 
 
@@ -185,6 +195,63 @@ def _upstream_response(upstream: httpx.Response, content: bytes) -> Response:
     response = Response(content=content, status_code=upstream.status_code)
     response.raw_headers.extend(_encoded(filter_response_headers(_decoded(upstream.headers.raw))))
     return response
+
+
+class _RelayResponse(StreamingResponse):
+    """Relays an upstream event stream through a stream transformer.
+
+    However the response ends (completion, a failure, a client disconnect), the body generator
+    and the upstream response are closed and the request line is written once. On a failure the
+    stream stops: the client sees a truncated stream, and text the transformer holds back is
+    never sent.
+    """
+
+    def __init__(
+        self, upstream: httpx.Response, transformer: StreamTransformer, log: _RequestLog
+    ) -> None:
+        self._upstream = upstream
+        self._transformer = transformer
+        self._log = log
+        self._events = self._relay()
+        log.deferred = True
+        super().__init__(self._events, status_code=upstream.status_code, media_type=_EVENT_STREAM)
+        kept = [
+            (name, value)
+            for name, value in filter_response_headers(_decoded(upstream.headers.raw))
+            if name.lower() not in ("content-type", "cache-control")
+        ]
+        self.raw_headers.extend(_encoded([*kept, ("cache-control", "no-cache")]))
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        except ClientDisconnect:
+            pass  # how servers implementing ASGI 2.4 report a client that went away
+        except Exception as exc:
+            self._log.failure("stream", exc)
+        finally:
+            # Shielded: after a disconnect the task is being cancelled, and the provider must
+            # still be told to stop generating.
+            with anyio.CancelScope(shield=True):
+                await self._events.aclose()
+                await self._upstream.aclose()
+            self._log.unresolved_placeholders = self._transformer.unresolved
+            self._log.emit(self.status_code)
+
+    async def _relay(self) -> AsyncGenerator[bytes, None]:
+        parser = SSEParser()
+        try:
+            async for chunk in self._upstream.aiter_bytes():
+                for event in parser.feed(chunk):
+                    for output in self._transformer.feed(event):
+                        yield output.encode()
+            for event in parser.end():
+                for output in self._transformer.feed(event):
+                    yield output.encode()
+            for output in self._transformer.end():
+                yield output.encode()
+        except Exception as exc:
+            self._log.failure("stream", exc)
 
 
 class _Gateway:
@@ -236,7 +303,8 @@ class _Gateway:
             log.failure("internal", exc)
             response = errors.error_response(dialect, errors.internal_error())
         response.headers[REQUEST_ID_HEADER] = log.request_id
-        log.emit(response.status_code)
+        if not log.deferred:
+            log.emit(response.status_code)
         return response
 
     async def not_routed(self, request: Request, exc: Exception) -> Response:
@@ -247,8 +315,7 @@ class _Gateway:
         self, request: Request, route: _DialectRoute, log: _RequestLog
     ) -> Response:
         body = _parse_object(await self._read_body(request))
-        if body.get("stream"):
-            raise errors.streaming_not_supported()
+        streaming = bool(body.get("stream"))
         try:
             prepared = route.dialect.prepare_request(body, self._policy)
         except UnsupportedContentError as exc:
@@ -264,9 +331,27 @@ class _Gateway:
             log.failure("pseudonymize", exc)
             raise errors.pseudonymization_failed() from None
         log.entities = dict(Counter(entity.entity_type for entity in batch.mapping.entities()))
+        url = route.base_url + route.path
         upstream = await self._forward(
-            request, "POST", route.base_url + route.path, _encode(body), log, json_content=True
+            request, "POST", url, _encode(body), log, json_content=True, stream=streaming
         )
+        if not streaming:
+            return self._restored(upstream, route.dialect, batch.mapping, log)
+        if (
+            upstream.status_code < 400
+            and _media_type(upstream.headers.get("content-type")) == _EVENT_STREAM
+        ):
+            try:
+                transformer = route.dialect.stream_transformer(batch.mapping)
+                return _RelayResponse(upstream, transformer, log)
+            except Exception:
+                await upstream.aclose()
+                raise
+        # An error, or an answer that is not a stream: handled like a non-streamed answer.
+        try:
+            await self._read(upstream, log)
+        finally:
+            await upstream.aclose()
         return self._restored(upstream, route.dialect, batch.mapping, log)
 
     async def _passthrough_flow(
@@ -303,6 +388,7 @@ class _Gateway:
         log: _RequestLog,
         *,
         json_content: bool,
+        stream: bool = False,
     ) -> httpx.Response:
         if self.client is None:
             raise RuntimeError("no upstream client: the application lifespan has not started")
@@ -311,10 +397,22 @@ class _Gateway:
             headers.append(("content-type", "application/json"))
         query: bytes = request.scope.get("query_string", b"")
         target = httpx.URL(url, query=query) if query else httpx.URL(url)
+        outgoing = self.client.build_request(
+            method, target, content=content, headers=_encoded(headers)
+        )
         try:
-            return await self.client.request(
-                method, target, content=content, headers=_encoded(headers), follow_redirects=False
-            )
+            return await self.client.send(outgoing, stream=stream, follow_redirects=False)
+        except httpx.TimeoutException as exc:
+            log.failure("forward", exc)
+            raise errors.upstream_timeout() from None
+        except httpx.HTTPError as exc:
+            log.failure("forward", exc)
+            raise errors.upstream_unreachable() from None
+
+    async def _read(self, upstream: httpx.Response, log: _RequestLog) -> None:
+        """Read a streamed upstream body to the end, mapping transport errors like `_forward`."""
+        try:
+            await upstream.aread()
         except httpx.TimeoutException as exc:
             log.failure("forward", exc)
             raise errors.upstream_timeout() from None

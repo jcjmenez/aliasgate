@@ -125,15 +125,6 @@ async def test_the_forwarded_body_is_json_even_without_a_client_content_type(
     assert route.calls.last.request.headers["content-type"] == "application/json"
 
 
-async def test_stream_true_is_not_supported_yet(
-    client: httpx.AsyncClient, upstream: respx.MockRouter
-) -> None:
-    response = await client.post(CHAT, json=chat_request(HAPPY_TEXT, stream=True))
-    assert response.status_code == 501
-    assert _error(response)["code"] == "streaming_not_supported"
-    assert upstream.calls.call_count == 0
-
-
 def _image_request() -> dict[str, Any]:
     parts = [
         {"type": "text", "text": "Describe this photo of Juan Pérez"},

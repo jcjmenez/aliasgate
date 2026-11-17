@@ -1,0 +1,88 @@
+[
+  {
+    "id": "chatcmpl-example0002",
+    "object": "chat.completion.chunk",
+    "created": 1763380800,
+    "model": "gpt-example",
+    "system_fingerprint": "fp_example",
+    "choices": [
+      {
+        "index": 0,
+        "delta": {
+          "role": "assistant",
+          "content": "",
+          "refusal": null
+        },
+        "logprobs": null,
+        "finish_reason": null
+      }
+    ]
+  },
+  {
+    "id": "chatcmpl-example0002",
+    "object": "chat.completion.chunk",
+    "created": 1763380800,
+    "model": "gpt-example",
+    "system_fingerprint": "fp_example",
+    "choices": [
+      {
+        "index": 0,
+        "delta": {
+          "content": "Dear [PERS"
+        },
+        "logprobs": null,
+        "finish_reason": null
+      }
+    ]
+  },
+  {
+    "id": "chatcmpl-example0002",
+    "object": "chat.completion.chunk",
+    "created": 1763380800,
+    "model": "gpt-example",
+    "system_fingerprint": "fp_example",
+    "choices": [
+      {
+        "index": 0,
+        "delta": {
+          "content": "ON_1]"
+        },
+        "logprobs": null,
+        "finish_reason": null
+      }
+    ]
+  },
+  {
+    "id": "chatcmpl-example0002",
+    "object": "chat.completion.chunk",
+    "created": 1763380800,
+    "model": "gpt-example",
+    "system_fingerprint": "fp_example",
+    "choices": [
+      {
+        "index": 0,
+        "delta": {
+          "content": " of [ORG_1]."
+        },
+        "logprobs": null,
+        "finish_reason": null
+      }
+    ]
+  },
+  {
+    "id": "chatcmpl-example0002",
+    "object": "chat.completion.chunk",
+    "created": 1763380800,
+    "model": "gpt-example",
+    "system_fingerprint": "fp_example",
+    "choices": [
+      {
+        "index": 0,
+        "delta": {},
+        "logprobs": null,
+        "finish_reason": "stop"
+      }
+    ]
+  },
+  "[DONE]"
+]

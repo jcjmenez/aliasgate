@@ -80,6 +80,11 @@ For each block in `body["content"]`:
 
 ### Streaming (`AnthropicStreamTransformer`)
 
+(Found in slice 07: the proxy's `_RelayResponse` works with any `StreamTransformer`, so this
+slice only needs the transformer. Reuse `SSEParser`, `SSEEvent` and `StreamRestorer`, and keep
+each event's `event` field, which Anthropic streams rely on. The OpenAI transformer returns an
+unchanged event as the original object; doing the same here keeps upstream bytes intact.)
+
 Events are named (`event:` field) and carry a JSON `data` with a `type`. Keep one
 `StreamRestorer` per content block `index`.
 

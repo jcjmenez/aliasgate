@@ -243,7 +243,8 @@ Algorithm for `feed`:
    position moves back by one (it may be the start of `\[`).
 5. Emit `restore(buffer[:hold])` and keep `buffer[hold:]`.
 
-`flush` returns `restore(buffer)` and empties the buffer.
+`flush` returns `restore(buffer)` and empties the buffer. `unresolved` counts the tolerant
+matches left unrestored in the text emitted so far.
 
 Required property (tested with Hypothesis): for every text and every way of cutting it into
 chunks, the concatenation of all `feed` results plus `flush` equals `restore(text)`.
@@ -311,7 +312,11 @@ gateway does not understand cannot be pseudonymised.
 - **Fail closed.** Any exception between parsing and forwarding results in an error response in
   the dialect's error shape and nothing is forwarded. Any exception while restoring a
   non-streamed response results in a 502; the un-restored body is never returned as if it were
-  correct.
+  correct. A failure in the middle of a stream ends the stream: the client sees it truncated,
+  and text the stream restorer still holds is never sent.
+- **Streams are always closed.** However a streamed response ends (completion, a failure, the
+  client going away, or the request task being cancelled), the upstream response is closed, so
+  the provider stops generating, and the request is logged once, when the stream ends.
 
 ### 7.1 Logging rule
 

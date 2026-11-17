@@ -29,11 +29,14 @@ from aliasgate.dialects.base import (
     StreamTransformer,
     UnsupportedContentError,
     key_slot,
+    restore_all_strings,
     slots_for_json_strings,
     slots_for_key_strings,
 )
+from aliasgate.dialects.sse import SSEEvent
 from aliasgate.engine import restore
 from aliasgate.mapping import Mapping
+from aliasgate.stream import StreamRestorer
 
 _USER_IDENTIFIERS: Final = ("user", "safety_identifier")
 _TEXT_PARTS: Final = frozenset({"text", "refusal"})  # the part type is also the text's key
@@ -214,11 +217,143 @@ class OpenAIChatDialect:
                 _restore_message(message, mapping)
 
     def stream_transformer(self, mapping: Mapping) -> StreamTransformer:
-        """Not available until streaming is implemented (slice 07)."""
-        raise NotImplementedError("streaming is implemented in slice 07")
+        """A transformer that restores one streamed completion with `mapping`."""
+        return OpenAIChatStreamTransformer(mapping)
 
     def error_body(self, status: int, code: str, message: str) -> dict[str, Any]:
         """A gateway error in the OpenAI error shape."""
         return {
             "error": {"message": message, "type": "aliasgate_error", "param": None, "code": code}
         }
+
+
+# A restorer per (choice index, channel). The channel names the delta field the text belongs
+# to: "content", "refusal", "function_call", "audio", or ("tool" | "custom", tool call index).
+type _Channel = str | tuple[str, int]
+_ENVELOPE: Final = ("id", "object", "created", "model", "system_fingerprint")
+_JSON_CHANNELS: Final = frozenset({"function_call"})
+
+
+def _dumps(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _channel_delta(channel: _Channel, text: str) -> dict[str, Any]:
+    """A delta that carries `text` in the field `channel` stands for."""
+    if isinstance(channel, tuple):
+        kind, tool = channel
+        call = {"function": {"arguments": text}} if kind == "tool" else {"custom": {"input": text}}
+        return {"tool_calls": [{"index": tool, **call}]}
+    if channel == "function_call":
+        return {"function_call": {"arguments": text}}
+    if channel == "audio":
+        return {"audio": {"transcript": text}}
+    return {channel: text}
+
+
+class OpenAIChatStreamTransformer:
+    """Restores the placeholders of one streamed chat completion, chunk by chunk.
+
+    Each text field of each choice has its own `StreamRestorer`, so placeholders split across
+    chunks are restored and choices or tool calls never mix. Text still held when a choice
+    finishes, at `[DONE]` or at `end()` is sent in a synthetic chunk before it; nothing held
+    is emitted any other way.
+    """
+
+    def __init__(self, mapping: Mapping) -> None:
+        self._mapping = mapping
+        self._restorers: dict[tuple[int, _Channel], StreamRestorer] = {}
+        self._envelope: dict[str, Any] = {}
+        self._event_name: str | None = None
+        self.unresolved = 0
+
+    def feed(self, event: SSEEvent) -> list[SSEEvent]:
+        """The events to send in place of `event`: synthetic flushes first, then the chunk."""
+        self._event_name = event.event
+        if event.data == "[DONE]":
+            return [*self._flush(None), event]
+        try:
+            chunk = json.loads(event.data)
+        except (ValueError, RecursionError):
+            return [event]
+        if not isinstance(chunk, dict):
+            return [event]
+        choices = chunk.get("choices")
+        if not isinstance(choices, list):
+            if "error" not in chunk:
+                return [event]
+            # A provider error sent in the stream; it may echo placeholders back.
+            return [SSEEvent(event.event, _dumps(restore_all_strings(chunk, self._mapping)))]
+        self._envelope = {key: chunk[key] for key in _ENVELOPE if key in chunk}
+        changed = False
+        flushed: list[SSEEvent] = []
+        for choice in choices:
+            if not isinstance(choice, dict) or not isinstance(index := choice.get("index"), int):
+                continue
+            delta = choice.get("delta")
+            if isinstance(delta, dict):
+                changed |= self._restore_delta(index, delta)
+            if choice.get("finish_reason") is not None:
+                flushed += self._flush(index)
+        self._count()
+        if not changed and not flushed:
+            return [event]
+        return [*flushed, SSEEvent(event.event, _dumps(chunk), event.raw_fields)]
+
+    def end(self) -> list[SSEEvent]:
+        """Synthetic chunks for any text still held; called when the stream ends without [DONE]."""
+        return self._flush(None)
+
+    def _restore_delta(self, index: int, delta: dict[str, Any]) -> bool:
+        changed = self._feed(delta, "content", (index, "content"))
+        changed |= self._feed(delta, "refusal", (index, "refusal"))
+        tool_calls = delta.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for call in tool_calls:
+                if not isinstance(call, dict) or not isinstance(tool := call.get("index"), int):
+                    continue
+                if isinstance(function := call.get("function"), dict):
+                    changed |= self._feed(function, "arguments", (index, ("tool", tool)))
+                if isinstance(custom := call.get("custom"), dict):
+                    changed |= self._feed(custom, "input", (index, ("custom", tool)))
+        if isinstance(function_call := delta.get("function_call"), dict):
+            changed |= self._feed(function_call, "arguments", (index, "function_call"))
+        if isinstance(audio := delta.get("audio"), dict):
+            changed |= self._feed(audio, "transcript", (index, "audio"))
+        return changed
+
+    def _feed(self, holder: dict[str, Any], key: str, where: tuple[int, _Channel]) -> bool:
+        value = holder.get(key)
+        if not isinstance(value, str):
+            return False
+        restorer = self._restorers.get(where)
+        if restorer is None:
+            channel = where[1]
+            json_escape = channel in _JSON_CHANNELS or (
+                isinstance(channel, tuple) and channel[0] == "tool"
+            )
+            restorer = StreamRestorer(self._mapping, json_escape=json_escape)
+            self._restorers[where] = restorer
+        restored = restorer.feed(value)
+        holder[key] = restored
+        return restored != value
+
+    def _flush(self, index: int | None) -> list[SSEEvent]:
+        """Synthetic chunks with the held text of one choice, or of every choice for None."""
+        events = []
+        for (choice, channel), restorer in self._restorers.items():
+            if index is not None and choice != index:
+                continue
+            text = restorer.flush()
+            if text:
+                delta = _channel_delta(channel, text)
+                chunk = {
+                    **self._envelope,
+                    "choices": [{"index": choice, "delta": delta, "finish_reason": None}],
+                }
+                events.append(SSEEvent(self._event_name, _dumps(chunk)))
+        self._count()
+        return events
+
+    def _count(self) -> None:
+        self.unresolved = sum(restorer.unresolved for restorer in self._restorers.values())
