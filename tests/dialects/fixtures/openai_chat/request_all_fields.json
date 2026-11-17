@@ -1,0 +1,85 @@
+{
+  "model": "gpt-example",
+  "user": "end-user-0001",
+  "safety_identifier": "hashed-end-user-0001",
+  "metadata": {"ticket": "T-0001"},
+  "temperature": 0.2,
+  "stop": ["stop text"],
+  "messages": [
+    {"role": "system", "content": "system text"},
+    {
+      "role": "developer",
+      "content": [
+        {"type": "text", "text": "developer part 1"},
+        {"type": "text", "text": "developer part 2"}
+      ]
+    },
+    {"role": "user", "name": "customer", "content": [{"type": "text", "text": "user part"}]},
+    {
+      "role": "assistant",
+      "content": [
+        {"type": "text", "text": "assistant part"},
+        {"type": "refusal", "refusal": "refusal part"}
+      ],
+      "refusal": "assistant refusal",
+      "audio": {"id": "audio_0001"},
+      "tool_calls": [
+        {
+          "id": "call_0001",
+          "type": "function",
+          "function": {"name": "send_email", "arguments": "{\"to\":\"to argument\",\"cc\":[\"cc argument\"]}"}
+        },
+        {"id": "call_0002", "type": "custom", "custom": {"name": "run_query", "input": "custom input"}}
+      ]
+    },
+    {"role": "tool", "tool_call_id": "call_0001", "content": "tool result"},
+    {"role": "tool", "tool_call_id": "call_0002", "content": [{"type": "text", "text": "tool result part"}]},
+    {
+      "role": "assistant",
+      "content": null,
+      "function_call": {"name": "lookup", "arguments": "{\"query\":\"function call argument\"}"}
+    },
+    {"role": "function", "name": "lookup", "content": "function result"}
+  ],
+  "prediction": {"type": "content", "content": "prediction text"},
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "send_email",
+        "description": "tool description",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "to": {"type": "string", "description": "to description", "enum": ["enum value"]},
+            "description": {"type": "string", "description": "nested description"}
+          },
+          "required": ["to"]
+        },
+        "strict": true
+      }
+    },
+    {
+      "type": "custom",
+      "custom": {
+        "name": "run_query",
+        "description": "custom tool description",
+        "format": {"type": "grammar", "grammar": {"syntax": "lark", "definition": "start: WORD"}}
+      }
+    }
+  ],
+  "functions": [
+    {
+      "name": "lookup",
+      "description": "function description",
+      "parameters": {
+        "type": "object",
+        "properties": {"query": {"type": "string", "description": "query description"}}
+      }
+    }
+  ],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {"name": "answer", "description": "response format description", "schema": {"type": "object"}}
+  }
+}

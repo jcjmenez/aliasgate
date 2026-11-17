@@ -50,7 +50,14 @@ Slot order:
    | anything else (server tool blocks, search results, future types) | unsupported, same rule |
 
 3. If `policy.tool_definitions`: for each entry of `body["tools"]`, every string value under a
-   key named `"description"`, depth-first.
+   key named `"description"`, depth-first. `slots_for_key_strings(body["tools"], "description")`
+   in `base.py` (slice 05) does exactly this.
+
+(Found in slice 05: `UnsupportedContentError` replaces a kind that is not a short lower-case
+label with `"unknown"`, so the block `type` taken from the request never reaches an error
+message or a log. The OpenAI dialect also raises `MalformedRequestError`, naming the position
+only, whenever a field it walks has the wrong shape (a part without a string `type`, a `text`
+that is not a string), so that nothing it cannot read is forwarded. Do the same here.)
 
 Identifier stripping: delete `body["metadata"]["user_id"]` when `strip_user_identifiers`; if
 `metadata` becomes empty, delete it.

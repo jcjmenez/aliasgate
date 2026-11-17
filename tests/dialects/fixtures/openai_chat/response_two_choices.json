@@ -1,0 +1,55 @@
+{
+  "id": "chatcmpl-example0001",
+  "object": "chat.completion",
+  "created": 1763380800,
+  "model": "gpt-example",
+  "system_fingerprint": "fp_example",
+  "service_tier": "default",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "tool_calls",
+      "message": {
+        "role": "assistant",
+        "content": "I will write to [PERSON_1] now.",
+        "refusal": null,
+        "annotations": [
+          {
+            "type": "url_citation",
+            "url_citation": {"start_index": 0, "end_index": 4, "title": "Page about [PERSON_1]", "url": "https://example.com/"}
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "call_0001",
+            "type": "function",
+            "function": {"name": "send_email", "arguments": "{\"to\": \"[EMAIL_1]\", \"greeting\": \"Dear [PERSON_1]\"}"}
+          },
+          {"id": "call_0002", "type": "custom", "custom": {"name": "note", "input": "Note for [person_1]"}}
+        ]
+      },
+      "logprobs": {
+        "content": [{"token": "[PERSON_1]", "logprob": -0.25, "bytes": [91, 80], "top_logprobs": []}],
+        "refusal": null
+      }
+    },
+    {
+      "index": 1,
+      "finish_reason": "function_call",
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": "I cannot share details about [PERSON_1].",
+        "function_call": {"name": "lookup", "arguments": "{\"name\":\"[PERSON_1]\"}"},
+        "audio": {"id": "audio_0001", "data": "AAAA", "expires_at": 1763384400, "transcript": "Hello [PERSON_1]."}
+      },
+      "logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 42,
+    "completion_tokens": 17,
+    "total_tokens": 59,
+    "completion_tokens_details": {"reasoning_tokens": 0}
+  }
+}

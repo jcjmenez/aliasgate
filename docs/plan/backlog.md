@@ -80,18 +80,28 @@ Known gaps in the rules of slice 02, each a missed detection:
 - With `URL` enabled, an email inside a URL wins the overlap (score 1.0 against 0.9) and the
   rest of the URL is not pseudonymised.
 
-## 10. Operations
+## 10. Request fields forwarded unchanged
+
+Slice 05 leaves some OpenAI request fields that can carry end-user data untouched, because
+changing them alters behaviour: `prompt_cache_key` (provider cache routing; OpenAI suggests it
+in place of `user`), `web_search_options.user_location` (localised search), `messages[].name`,
+and the keys of objects inside tool-call arguments. The leak audit (slice 10) still catches a
+surface detected elsewhere in the request if it appears in a value of these fields. Direction:
+per-field policy options (strip, pseudonymise, forward), defaulting to the current behaviour,
+with the same review for the Anthropic dialect.
+
+## 11. Operations
 
 OpenTelemetry tracing (attributes limited to counts and types), Helm chart, hot reload of
 dictionaries, ONNX or quantised model for faster CPU inference, batching of inference across
 concurrent requests.
 
-## 11. Adapters
+## 12. Adapters
 
 A LiteLLM guardrail and a LangChain or LlamaIndex wrapper built on the core library, for teams
 that already run those.
 
-## 12. Public evaluation datasets
+## 13. Public evaluation datasets
 
 Review licences and content of public PII datasets and add loaders for the acceptable ones, to
 publish numbers comparable with other tools.

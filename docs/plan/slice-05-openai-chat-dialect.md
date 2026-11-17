@@ -56,7 +56,7 @@ class PreparedRequest:
 
 class UnsupportedContentError(Exception):
     """Content the gateway cannot inspect. `kind` is a short label such as "image_url"."""
-    kind: str
+    kind: str   # a kind that is not [a-z][a-z0-9_]{0,39} becomes "unknown" (it is request text)
 
 class MalformedRequestError(Exception):
     """The body does not have the shape this dialect requires. Message has no user text."""
@@ -67,7 +67,14 @@ def slots_for_json_strings(container: dict[str, Any] | list[Any]) -> list[Slot]:
 
 def key_slot(obj: dict[str, Any], key: str) -> Slot: ...
 def index_slot(arr: list[Any], index: int) -> Slot: ...
+
+def slots_for_key_strings(container: dict[str, Any] | list[Any], key: str) -> list[Slot]:
+    """A slot for every string stored directly under `key` in any dict reachable from the
+    container, in the order of slots_for_json_strings. Other strings are never slots."""
 ```
+
+(`slots_for_key_strings` was added during the slice for the tool-definition rule, which slice 08
+needs too.)
 
 Also define the `Dialect` and `StreamTransformer` protocols from architecture §6 here.
 `stream_transformer` is implemented in slice 07; in this slice `OpenAIChatDialect.stream_transformer`
@@ -87,7 +94,9 @@ identifier stripping. Slot order:
         - `"refusal"` → slot on `part["refusal"]`;
         - `"image_url"`, `"input_audio"`, `"file"`, or any other type → if policy is `block`,
           raise `UnsupportedContentError(kind=<type>)`; if `pass`, skip.
-   2. `tool_calls` (assistant messages), for each call in order:
+   2. `refusal` (assistant messages): a string → one slot. (Added in slice 05 after checking
+      the API: the assistant's refusal is resent with the history, already restored.)
+   3. `tool_calls` (assistant messages), for each call in order:
       - `type == "function"`: `function.arguments` is a JSON string. Try `json.loads`. If it
         parses to a dict or list: add `slots_for_json_strings` over the parsed value, and a
         finalizer that writes back
@@ -95,7 +104,7 @@ identifier stripping. Slot order:
         string, number, boolean or null, or fails to parse: one slot on the raw string.
       - `type == "custom"`: one slot on `custom.input`.
       - other types: `block` → `UnsupportedContentError`; `pass` → skip.
-   3. Legacy `function_call.arguments`: same treatment as function arguments.
+   4. Legacy `function_call.arguments`: same treatment as function arguments.
 2. `body["prediction"]["content"]` if present: string → one slot; list of text parts → slots.
 3. If `policy.tool_definitions`: for each entry of `body["tools"]`, every string value found
    under a key named exactly `"description"` anywhere inside the entry, depth-first. Then the
@@ -110,6 +119,10 @@ needed), but note it in the usage documentation in slice 12.
 
 Malformed input: `messages` missing or not a list, or a message that is not a dict, raises
 `MalformedRequestError`. Do not attempt to validate the rest of the API; the provider does that.
+The fields the dialect walks are the exception: where it expects a string, a list, an object or
+a part `type` and finds something else (for example a `text` part whose `text` is a list), it
+raises `MalformedRequestError` naming the position, because forwarding a value it could not
+read would bypass pseudonymisation.
 
 Fields never touched: `model`, `messages[].role`, `messages[].name`, `tool_call_id`, tool and
 function names, parameter schemas apart from descriptions, `response_format`, `stop`, `logit_bias`,
@@ -125,6 +138,7 @@ sampling parameters, `stream`, `stream_options`.
   string (do not parse and re-serialise; keep the model's formatting);
 - `message.tool_calls[].custom.input` → `restore`;
 - `message.function_call.arguments` → `restore(..., json_escape=True)`;
+- `message.audio.transcript` → `restore` (added in slice 05; `audio.data` is untouched);
 - `message.annotations`, `logprobs`, `usage`, ids → untouched.
 
 A body without `choices` (for example an error object) is handled by a separate helper:

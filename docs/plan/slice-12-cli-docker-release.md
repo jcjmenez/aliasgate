@@ -92,7 +92,12 @@ the tag or publish yourself; the maintainer does that.**
   that degrade (list from the threat model), rejected images and files.
 - Every error code the gateway can return, with cause and remedy, in one table.
 - Notes carried over from earlier slices: `metadata` in OpenAI requests is not stripped; tool
-  names and enum values are not pseudonymised.
+  names and enum values are not pseudonymised. Also forwarded unchanged (slice 05, decided with
+  the maintainer): `prompt_cache_key`, which OpenAI recommends in place of `user` and which may
+  therefore hold a per-user id; `web_search_options.user_location` (city, region, timezone);
+  `messages[].name`; the keys of objects inside tool-call arguments; `response_format` schema
+  descriptions; `stop` sequences. Under `unsupported_content: pass`, image, audio and file parts
+  are forwarded as they are.
 
 `docs/deployment.md`
 - Network placement: inside the trust boundary, the only egress path to the provider (block
