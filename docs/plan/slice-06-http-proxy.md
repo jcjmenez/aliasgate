@@ -132,6 +132,32 @@ are fixed strings chosen by the gateway.
 host=..., port=..., log_config=None)`. The full CLI comes in slice 12; keep this to argument
 parsing with `argparse` and one function.
 
+### Decisions made while implementing (slice 06)
+
+- The lone-surrogate case fails at step 7, before anything is sent. If `json.dumps(...).encode()`
+  raises `UnicodeEncodeError`, the answer is `400 invalid_json`.
+- `malformed_request` messages include the position given by `MalformedRequestError` (for
+  example `messages[0].content`). That message is built from field names and indexes only.
+- Routing: one catch-all Starlette route, then exact `(method, path)` matching in this order:
+  `GET /healthz`, dialect routes, passthrough entries. A passthrough entry can never shadow a
+  dialect route. A method Starlette does not route (405) gets the same 404 `unknown_endpoint`.
+- Every response carries `x-aliasgate-request-id`, error responses included.
+- The forwarded body gets `content-type: application/json` when the client sent none.
+  Redirects are never followed, even with an injected client.
+- An upstream body counts as JSON when its media type is `application/json` or ends with `+json`.
+  If such a body does not parse, it is returned unchanged. A JSON list or scalar is restored
+  with `restore_all_strings`. `unresolved_placeholders` counts tolerant matches that are not in
+  the mapping, over every string of the upstream JSON body.
+- Error log lines: `request failed` with `request_id`, `stage` (`pseudonymize`, `forward`,
+  `restore`, `internal`), `error` (class name) and, for `DetectionError`, `detector`.
+- `python -m aliasgate` runs uvicorn with `access_log=False`. `configure_logging` keeps
+  `httpx` and `httpcore` at WARNING or above (architecture §7.1). `--config` is optional.
+- pytest: `pythonpath = ["tests"]` so that `tests/proxy` can import `fakes`, and
+  `asyncio_default_fixture_loop_scope = "function"`, because pytest-asyncio 1.5 warns when it
+  is unset.
+- Starlette 1.10 deprecates `starlette.testclient` with httpx. The tests call the app through
+  `httpx.ASGITransport` and run the lifespan with `app.router.lifespan_context(app)`.
+
 ## Tests
 
 Use `httpx.ASGITransport` to call the app in process and `respx` to mock the upstream. No real

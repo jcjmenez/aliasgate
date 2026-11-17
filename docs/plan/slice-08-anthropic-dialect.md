@@ -108,7 +108,9 @@ code to the message in parentheses, for example `"Unsupported content: image (un
 ### Proxy changes
 
 - `POST /v1/messages` → dialect `anthropic_messages`, upstream
-  `settings.upstreams.anthropic.base_url`.
+  `settings.upstreams.anthropic.base_url`. (Found in slice 06: routes are entries of
+  `_Gateway._routes`, keyed by `(method, path)`, each a `_DialectRoute(dialect, base_url, path)`.
+  Errors use the route's dialect, and dialect routes always win over passthrough entries.)
 - `POST /v1/messages/count_tokens` → same request handling; the response is returned unchanged
   (it contains only numbers). A truthy `stream` is not applicable here.
 - The 404 for unknown endpoints uses the Anthropic error shape when the request carries an

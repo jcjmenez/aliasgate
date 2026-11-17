@@ -72,7 +72,7 @@ regulation. Read the [threat model](docs/threat-model.md) before relying on it.
 | 03 | Pseudonymisation engine and restoration | done |
 | 04 | Configuration and company dictionary | done |
 | 05 | OpenAI Chat Completions payload handling | done |
-| 06 | HTTP proxy (non-streaming) | planned |
+| 06 | HTTP proxy (non-streaming) | done |
 | 07 | Streaming restoration | planned |
 | 08 | Anthropic Messages dialect | planned |
 | 09 | ML detector (GLiNER) | planned |

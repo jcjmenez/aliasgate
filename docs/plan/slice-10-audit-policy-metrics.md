@@ -124,7 +124,8 @@ pseudonymisation happened without reading logs. A count only.
    `__reduce__` that raises), or this test fails as written.
 4. `test_logs_and_metrics_contain_no_text`: extend the logging hygiene test of slice 06 to both
    dialects, streaming included, and assert that the `/metrics` output contains none of the
-   synthetic values.
+   synthetic values. (Found in slice 06: the test's own httpx client logs the URLs the test
+   calls. `_gateway_records` drops exactly those records; keep the filter that narrow.)
 5. `test_unknown_endpoints_and_content_are_rejected_by_default`.
 6. `test_restoration_uses_only_the_request_mapping`: two concurrent requests where request A's
    upstream answer contains request B's placeholder numbers that do not exist in A; A's response
