@@ -69,7 +69,7 @@ regulation. Read the [threat model](docs/threat-model.md) before relying on it.
 | 00 | Repository scaffold, tooling, CI | done |
 | 01 | Core types, placeholder codec, mapping | done |
 | 02 | Rule-based detectors with checksums | done |
-| 03 | Pseudonymisation engine and restoration | planned |
+| 03 | Pseudonymisation engine and restoration | done |
 | 04 | Configuration and company dictionary | planned |
 | 05 | OpenAI Chat Completions payload handling | planned |
 | 06 | HTTP proxy (non-streaming) | planned |
