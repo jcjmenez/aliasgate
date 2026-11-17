@@ -16,7 +16,12 @@ listen:
 
 upstreams:
   openai:
-    base_url: https://api.openai.com      # http or https, no path
+    # http or https, with an optional base path; no query, fragment or credentials. The
+    # request path (/v1/chat/completions) is appended as it is, so do not end it with /v1.
+    base_url: https://api.openai.com
+    # Azure OpenAI serves the OpenAI-compatible API under /openai/v1/, so the base path is
+    # /openai. Clients send the Azure key (api-key header) and the deployment name as model.
+    # base_url: https://YOUR-RESOURCE.openai.azure.com/openai
   anthropic:
     base_url: https://api.anthropic.com
   timeout_seconds: 600

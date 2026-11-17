@@ -83,13 +83,43 @@ def load_settings(path: Path | None, env: Mapping[str, str] = os.environ) -> Set
   `ALIASGATE_LISTEN__PORT=9000`. Lists are given as JSON (`ALIASGATE_DETECTION__ALLOW_LIST='["ACME"]'`).
   Use `pydantic-settings` for this; verify its current API for combining a YAML source with
   environment variables, and make environment values win over the file.
-- Validation: base URLs must be `http` or `https` and have no path beyond `/`; entity types pass
+- Validation: base URLs must be `http` or `https` with a host and may end in a base path (changed
+  after merge, see "Base paths in `base_url`" below); entity types pass
   `validate_entity_type`; `phone_regions` are two upper-case letters; `threshold` in `[0, 1]`;
   `min_propagation_length >= 1`; `passthrough_paths` entries match `^(GET|POST|DELETE) /\S*$`.
 - Missing file → `FileNotFoundError` with the path. Invalid content → `pydantic.ValidationError`
   (let it propagate; the CLI formats it in slice 12).
 - Dictionary file paths are resolved relative to the configuration file.
 - `Settings` contains no secrets. The gateway forwards client credentials; it stores none.
+
+### Base paths in `base_url` (changed after merge, 2026-11-18)
+
+Slice 04 first rejected any path beyond `/`. That made Azure OpenAI unreachable: it serves the
+OpenAI-compatible API only under `/openai/v1/` (`GET /v1/models` answers 404), and the gateway
+forwards `POST /v1/chat/completions` to `{base_url}/v1/chat/completions`. The slice 07 manual
+check had to use a throwaway local relay that rewrote the path. `base_url` may now end in a base
+path, for example `https://<resource>.openai.azure.com/openai`, and the proxy still builds the
+upstream URL by plain concatenation (architecture §7). The validation guarantees that
+`base_url + request path` is exactly the URL httpx sends:
+
+- No `?` or `#` anywhere, not even an empty query or fragment (before this change
+  `https://api.example.com?` was accepted and moved the request path into the query string).
+  No whitespace or control characters, because `urlsplit` silently drops tabs and newlines.
+- No credentials; scheme `http` or `https`; a host; a valid port. Unchanged.
+- Trailing slashes are removed: `/openai/`, `/openai//` and `/openai` are the same base path.
+- Every remaining segment is non-empty and written in RFC 3986 path characters (letters,
+  digits, `-._~!$&'()*+,;=:@`) and `%XX` escapes. Escapes are kept and sent as written,
+  including their case and an encoded slash (`%2F`); the gateway never decodes or re-encodes
+  them. Anything else (a space, a non-ASCII letter, `\`, `{}`, `[]`, `|`, `"`, an invalid
+  escape such as `%zz`) is rejected: write it percent-encoded.
+- No `.` or `..` segment, plain or percent-encoded (`%2e%2E`): httpx resolves the plain form,
+  and upstream servers may resolve the encoded one, so the request would not go where the
+  configuration says.
+
+Tests: `tests/test_config.py` (accepted and rejected URLs, the reason each rejection names, and a
+property: an accepted base URL plus a route path parses in httpx to the same host and the same
+raw path, with no query or fragment) and `tests/proxy/test_upstream_base_path.py` (the URL
+called upstream for streaming and non-streaming chat requests and for a passthrough path).
 
 ### Dictionary file format
 
@@ -170,7 +200,8 @@ has three fictional terms. The `.gitignore` already excludes real `aliasgate.yam
 - defaults: `load_settings(None, env={})` returns the defaults listed above.
 - a YAML file overriding the port is honoured; an environment variable overrides the file.
 - unknown key anywhere → `ValidationError`.
-- invalid values each fail: bad URL scheme, URL with a path, lower-case entity type,
+- invalid values each fail: bad URL scheme, URL with a query (a URL with a path was in this list
+  until base paths were allowed, see above), lower-case entity type,
   three-letter region, threshold 1.5, `unsupported_content: maybe`.
 - relative dictionary path is resolved against the config file directory (use `tmp_path`).
 - the example file in `examples/` loads without error.

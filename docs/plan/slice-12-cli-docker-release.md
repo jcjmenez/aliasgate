@@ -98,6 +98,17 @@ the tag or publish yourself; the maintainer does that.**
   `messages[].name`; the keys of objects inside tool-call arguments; `response_format` schema
   descriptions; `stop` sequences. Under `unsupported_content: pass`, image, audio and file parts
   are forwarded as they are.
+- Upstreams with a base path (added after slice 07): `upstreams.*.base_url` may end in a base
+  path, and the request path is appended to it unchanged. Document it with Azure OpenAI, which
+  serves the OpenAI-compatible API only under `/openai/v1/`:
+  `base_url: https://<resource>.openai.azure.com/openai`. Clients still point at the gateway as
+  for OpenAI (`base_url="http://localhost:8080/v1"`), send the resource key, which the gateway
+  forwards unchanged (the `api-key` header worked on 2026-11-17), and use the deployment name
+  as `model`. Say what does not work: a `base_url` ending in `/v1` (requests go to
+  `/v1/v1/...`), a query string in `base_url` (the gateway forwards the client's own query
+  string), and Azure's older `/openai/deployments/{name}/...?api-version=...` paths, which are
+  not gateway routes. Verify the Azure path and header again when writing the document, and run
+  the manual check of this slice against Azure as well, if a resource is available.
 - Logging (slice 06): one JSON line per request with `request_id`, `route`, `status`,
   `duration_ms`, `slots`, `entities` and `unresolved_placeholders`. Uvicorn's access log is off.
   The `httpx` and `httpcore` loggers stay at WARNING, because they would log the forwarded

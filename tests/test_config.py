@@ -1,9 +1,14 @@
+import re
+import string
 from pathlib import Path
 
+import httpx
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from pydantic import ValidationError
 
-from aliasgate.config import Settings, load_settings, load_terms
+from aliasgate.config import Settings, UpstreamSettings, load_settings, load_terms
 from aliasgate.detectors.dictionary import Term
 from aliasgate.detectors.rules import DEFAULT_RULE_TYPES
 
@@ -127,7 +132,6 @@ def test_unknown_aliasgate_environment_variable_is_rejected(name: str) -> None:
     "content",
     [
         "upstreams:\n  openai:\n    base_url: ftp://api.example.com\n",
-        "upstreams:\n  openai:\n    base_url: https://api.example.com/v1\n",
         "upstreams:\n  openai:\n    base_url: https://api.example.com/?x=1\n",
         "upstreams:\n  openai:\n    base_url: https://user:pass@api.example.com\n",
         "upstreams:\n  openai:\n    base_url: https://\n",
@@ -147,7 +151,6 @@ def test_unknown_aliasgate_environment_variable_is_rejected(name: str) -> None:
     ],
     ids=[
         "url-scheme",
-        "url-path",
         "url-query",
         "url-credentials",
         "url-without-host",
@@ -186,11 +189,177 @@ def test_validation_errors_do_not_repeat_the_input_value(tmp_path: Path) -> None
         ("https://api.example.com/", "https://api.example.com"),
         ("http://localhost:4000", "http://localhost:4000"),
         ("HTTPS://api.example.com", "HTTPS://api.example.com"),
+        ("https://api.example.com/openai", "https://api.example.com/openai"),
+        ("https://api.example.com/openai/", "https://api.example.com/openai"),
+        ("https://api.example.com/openai//", "https://api.example.com/openai"),
+        ("http://localhost:4000/proxy/llm/", "http://localhost:4000/proxy/llm"),
+        ("https://api.example.com/tenant%2Fa/openai", "https://api.example.com/tenant%2Fa/openai"),
+        ("https://api.example.com/caf%c3%a9", "https://api.example.com/caf%c3%a9"),
+        (
+            "https://api.example.com/v-1.0_b~/a;v=1/x:y@z",
+            "https://api.example.com/v-1.0_b~/a;v=1/x:y@z",
+        ),
+        ("https://api.example.com/.well-known/...", "https://api.example.com/.well-known/..."),
+    ],
+    ids=[
+        "root-slash",
+        "port",
+        "upper-case-scheme",
+        "path",
+        "path-slash",
+        "path-slashes",
+        "nested-path",
+        "encoded-slash",
+        "encoded-lower-case",
+        "sub-delims",
+        "dots-in-segments",
     ],
 )
 def test_valid_base_urls_are_kept_without_a_trailing_slash(value: str, expected: str) -> None:
     settings = load_settings(None, env={"ALIASGATE_UPSTREAMS__OPENAI__BASE_URL": value})
     assert settings.upstreams.openai.base_url == expected
+
+
+def test_a_base_path_is_accepted_for_every_upstream_and_from_the_file(tmp_path: Path) -> None:
+    content = (
+        "upstreams:\n"
+        "  openai:\n    base_url: https://openai-resource.example.com/openai/\n"
+        "  anthropic:\n    base_url: https://anthropic-resource.example.com/anthropic\n"
+    )
+    upstreams = load_settings(_config(tmp_path, content), env={}).upstreams
+    assert upstreams.openai.base_url == "https://openai-resource.example.com/openai"
+    assert upstreams.anthropic.base_url == "https://anthropic-resource.example.com/anthropic"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "ftp://api.example.com/openai",
+        "https:///openai",
+        "https:api.example.com/openai",
+        "https://api.example.com/openai?api-version=1",
+        "https://api.example.com/openai?",
+        "https://api.example.com?",
+        "https://api.example.com/?",
+        "https://api.example.com/openai#part",
+        "https://api.example.com/openai#",
+        "https://api.example.com#",
+        "https://user:pass@api.example.com/openai",
+        "https://user@api.example.com/openai",
+        "https://api.example.com/a/../openai",
+        "https://api.example.com/./openai",
+        "https://api.example.com/openai/..",
+        "https://api.example.com/openai/./",
+        "https://api.example.com/%2e%2E/openai",
+        "https://api.example.com/.%2e/openai",
+        "https://api.example.com/openai/%2E",
+        "https://api.example.com//openai",
+        "https://api.example.com/a//openai",
+        "https://api.example.com/open ai",
+        "https://api.example.com/openai ",
+        " https://api.example.com/openai",
+        "https://api.example.com/op\nenai",
+        "https://api.example.com/op\tenai",
+        "https://api.example.com/café",
+        "https://api.example.com/a\\b",
+        "https://api.example.com/a%zz",
+        "https://api.example.com/a%2",
+        "https://api.example.com/a%",
+        "https://api.example.com/{deployment}",
+        "https://api.example.com/a[1]",
+        "https://api.example.com/a|b",
+        'https://api.example.com/a"b',
+    ],
+    ids=[
+        "scheme",
+        "no-host",
+        "no-authority",
+        "query",
+        "empty-query",
+        "empty-query-without-path",
+        "empty-query-after-slash",
+        "fragment",
+        "empty-fragment",
+        "empty-fragment-without-path",
+        "credentials",
+        "username",
+        "dot-dot-segment",
+        "dot-segment",
+        "trailing-dot-dot-segment",
+        "trailing-dot-segment",
+        "encoded-dot-dot-segment",
+        "half-encoded-dot-dot-segment",
+        "encoded-dot-segment",
+        "leading-empty-segment",
+        "inner-empty-segment",
+        "space",
+        "trailing-space",
+        "leading-space",
+        "newline",
+        "tab",
+        "non-ascii",
+        "backslash",
+        "invalid-escape",
+        "truncated-escape",
+        "lone-percent",
+        "braces",
+        "brackets",
+        "pipe",
+        "quote",
+    ],
+)
+def test_invalid_base_urls_are_rejected_without_repeating_the_value(value: str) -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        load_settings(None, env={"ALIASGATE_UPSTREAMS__OPENAI__BASE_URL": value})
+    assert "api.example.com" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [
+        ("https://api.example.com/openai?", "'?', '#'"),
+        ("https://api.example.com/open ai", "whitespace"),
+        ("ftp://api.example.com", "http or https"),
+        ("https://user@api.example.com", "credentials"),
+        ("https://api.example.com//openai", "empty segments"),
+        ("https://api.example.com/a%zz", "%XX escapes"),
+        ("https://api.example.com/%2e%2e/openai", "'.' or '..' segments"),
+    ],
+)
+def test_a_rejected_base_url_names_the_reason(value: str, reason: str) -> None:
+    with pytest.raises(ValidationError, match=re.escape(reason)):
+        UpstreamSettings(base_url=value)
+
+
+_ORIGIN = "https://api.example.com"
+_URL_CHARACTERS = string.ascii_letters + string.digits + "-._~!$&'()*+,;=:@/%?#\\ \t\n[]{}|\"é"
+_SEGMENT = st.lists(
+    st.sampled_from([*"az09-._~!$&'()*+,;=:@", "%2F", "%2e", "%2E", "%C3%A9", "%7e"]),
+    min_size=1,
+    max_size=6,
+).map("".join)
+_BASE_PATHS = st.builds(
+    lambda path, end: path + end,
+    st.one_of(
+        st.text(alphabet=_URL_CHARACTERS, max_size=30).map(lambda text: "/" + text),
+        st.lists(_SEGMENT, max_size=4).map(lambda segments: "".join(f"/{s}" for s in segments)),
+    ),
+    st.sampled_from(["", "/", "//"]),
+)
+
+
+@given(_BASE_PATHS, st.sampled_from(["/v1/chat/completions", "/v1/models"]))
+def test_property_an_accepted_base_url_plus_a_route_path_is_sent_exactly_as_concatenated(
+    base_path: str, route_path: str
+) -> None:
+    try:
+        base_url = UpstreamSettings(base_url=_ORIGIN + base_path).base_url
+    except ValidationError:
+        return
+    url = httpx.URL(base_url + route_path)
+    assert (url.scheme, url.host, url.port) == ("https", "api.example.com", None)
+    assert (url.query, url.fragment) == (b"", "")
+    assert url.raw_path.decode("ascii") == base_url.removeprefix(_ORIGIN) + route_path
 
 
 def test_valid_passthrough_paths_are_accepted() -> None:
@@ -253,6 +422,13 @@ def test_example_config_loads_and_points_at_the_example_dictionary() -> None:
     settings = load_settings(EXAMPLES / "aliasgate.example.yaml", env={})
     assert settings.detection.dictionary.files == (EXAMPLES / "dictionary.example.yaml",)
     assert settings.detection.dictionary.files[0].is_file()
+
+
+def test_the_commented_azure_base_url_in_the_example_config_is_valid() -> None:
+    text = (EXAMPLES / "aliasgate.example.yaml").read_text(encoding="utf-8")
+    commented = re.findall(r"^\s*# base_url: (\S+)$", text, flags=re.MULTILINE)
+    assert commented == ["https://YOUR-RESOURCE.openai.azure.com/openai"]
+    assert UpstreamSettings(base_url=commented[0]).base_url == commented[0]
 
 
 # Dictionary files -----------------------------------------------------------------------------
