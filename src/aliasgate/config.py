@@ -7,10 +7,11 @@ credentials and stores none.
 """
 
 import os
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any, Final, Literal
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import yaml
 from pydantic import (
@@ -33,17 +34,34 @@ from aliasgate.types import validate_entity_type
 _ENV_PREFIX: Final = "ALIASGATE_"
 _ENV_NESTED_DELIMITER: Final = "__"
 _BASE_DIR: Final = "base_dir"
+# One path segment as RFC 3986 §3.3 writes it: unreserved characters, sub-delimiters, ":" and
+# "@", and percent-encoded octets. httpx sends such a segment exactly as written.
+_PATH_SEGMENT: Final = re.compile(r"(?:[A-Za-z0-9\-._~!$&'()*+,;=:@]|%[0-9A-Fa-f]{2})+")
+_DOT_SEGMENTS: Final = frozenset({".", ".."})
 
 
 def _base_url(value: str) -> str:
+    """An http(s) URL with an optional base path, returned without trailing slashes, such that
+    appending a request path to it gives exactly the URL that is sent (architecture §7)."""
+    # urlsplit drops tabs and newlines, and an empty "?" or "#" leaves no query or fragment, so
+    # these are checked on the raw value: after concatenation they would move the request path.
+    if any(char in "?#" or char.isspace() or not char.isprintable() for char in value):
+        raise ValueError("must not contain '?', '#', whitespace or control characters")
     parts = urlsplit(value)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise ValueError("must be an http or https URL with a host")
-    if parts.path not in ("", "/") or parts.query or parts.fragment:
-        raise ValueError("must not have a path, query or fragment")
     if parts.username is not None or parts.password is not None:
         raise ValueError("must not contain credentials")
     _ = parts.port  # raises ValueError for a malformed port
+    for segment in parts.path.rstrip("/").split("/")[1:]:
+        if not segment:
+            raise ValueError("the path must not have empty segments")
+        if not _PATH_SEGMENT.fullmatch(segment):
+            raise ValueError(
+                "the path may only contain letters, digits, -._~!$&'()*+,;=:@ and %XX escapes"
+            )
+        if unquote(segment) in _DOT_SEGMENTS:
+            raise ValueError("the path must not have '.' or '..' segments")
     return value.rstrip("/")
 
 
@@ -66,7 +84,8 @@ class ListenSettings(_Section):
 
 
 class UpstreamSettings(_Section):
-    """One provider; `base_url` has no path and no trailing slash."""
+    """One provider; `base_url` may end in a base path and has no trailing slash, so
+    `base_url + request path` is the upstream URL."""
 
     base_url: BaseUrl
 

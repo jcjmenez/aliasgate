@@ -299,6 +299,11 @@ Any other path returns 404 unless it is listed in `passthrough_paths` (for examp
 `GET /v1/models`). Unknown endpoints are never forwarded by default, because an endpoint the
 gateway does not understand cannot be pseudonymised.
 
+The route path is appended to the upstream's `base_url`, which may end in a base path (§7). The
+routes the client sees do not change: with `base_url: https://<resource>.openai.azure.com/openai`,
+`POST /v1/chat/completions` is forwarded to
+`https://<resource>.openai.azure.com/openai/v1/chat/completions`.
+
 ## 7. Proxy
 
 - Starlette application, `httpx.AsyncClient` for the upstream, `uvicorn` to serve.
@@ -307,6 +312,14 @@ gateway does not understand cannot be pseudonymised.
   are not forwarded. `accept-encoding` is not forwarded; httpx negotiates its own.
 - Request flow: parse JSON → `prepare_request` → engine (in a worker thread) → write slots →
   leak audit → forward → restore (whole body, or stream transformer) → respond.
+- **Upstream URL.** A request for path `P` is forwarded to `{base_url}{P}`, followed by the
+  client's query string. `base_url` may end in a base path, for providers that serve the API
+  below a prefix (Azure OpenAI serves it only under `/openai/v1/`). Configuration validation
+  makes plain concatenation exact, so that `{base_url}{P}` is the URL httpx sends: no query,
+  fragment, credentials, whitespace or trailing slash; path segments non-empty, in RFC 3986
+  path characters, with `%XX` escapes sent as written; no `.` or `..` segment, plain or
+  percent-encoded, because httpx or the upstream would resolve it. The full rules are in
+  [plan/slice-04-config-and-dictionary.md](plan/slice-04-config-and-dictionary.md).
 - Upstream error responses (status ≥ 400) are passed through with `restore` applied to string
   values of the JSON body, because providers sometimes echo request content in error messages.
 - **Fail closed.** Any exception between parsing and forwarding results in an error response in
@@ -341,7 +354,8 @@ Exceptions are logged by class name only, and the JSON formatter never renders a
 
 One YAML file plus environment overrides (`ALIASGATE_` prefix, `__` for nesting), validated with
 pydantic. Invalid configuration stops the process at start-up. The complete schema is specified
-in [plan/slice-04-config-and-dictionary.md](plan/slice-04-config-and-dictionary.md).
+in [plan/slice-04-config-and-dictionary.md](plan/slice-04-config-and-dictionary.md). Upstream
+base URLs may carry a base path (§7).
 
 ## 10. Decisions and rejected alternatives
 
@@ -354,3 +368,4 @@ in [plan/slice-04-config-and-dictionary.md](plan/slice-04-config-and-dictionary.
 | Python | Go or Rust | The detection ecosystem (GLiNER, Presidio, transformers) is Python. Detection dominates latency, not the proxy. |
 | Starlette + httpx | LiteLLM plugin only | Independent correctness; adapter possible later. |
 | Reject unknown endpoints and uninspectable content | Forward unchanged | Fail closed is the only safe default for this product. |
+| A base path in `base_url`, followed by the request path unchanged | Rewriting paths per route, or one upstream URL per endpoint | One prefix covers the known case (Azure OpenAI's `/openai`), and `{base_url}{path}` can be checked at start-up. Per-route rewriting would be a second routing table to get wrong. |
