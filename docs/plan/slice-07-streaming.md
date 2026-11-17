@@ -83,6 +83,9 @@ class StreamTransformer(Protocol):           # already declared in base.py
     unresolved: int
 ```
 
+(Found in slice 05: `SSEEvent` did not exist yet, so `base.py` declares `feed` and `end` with
+`Any` event types. Narrow them to `SSEEvent` here; the change only tightens types.)
+
 State: a dict of `StreamRestorer` keyed by `(choice_index, channel)`, where channel is
 `"content"`, `"refusal"`, `("tool", tool_index)` or `"function_call"`. Tool and function-call
 restorers use `json_escape=True`. Also keep the envelope (`id`, `object`, `created`, `model`,

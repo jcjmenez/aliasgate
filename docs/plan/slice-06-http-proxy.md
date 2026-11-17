@@ -72,10 +72,15 @@ Request flow for a dialect route. Each numbered failure returns the listed statu
 7. Forward: `POST {base_url}{path}` with the query string, filtered headers and the re-serialised
    body (`json.dumps(body, ensure_ascii=False).encode()`). `Settings` stores `base_url` without
    a trailing slash (slice 04), so plain concatenation is correct.
+   (Found in slice 05: `json.loads` turns an escaped lone surrogate such as `"\ud800"` into a
+   `str` that `.encode()` rejects with `UnicodeEncodeError`. Decide how such a body fails, for
+   example `400 invalid_json` at step 2, and test it; it must not reach the upstream.)
    `httpx.TimeoutException` → `504`, code `upstream_timeout`. Other `httpx.HTTPError` → `502`,
    code `upstream_unreachable`.
 8. Upstream response:
-   - JSON body and status < 400 → `dialect.restore_response(body, mapping)`.
+   - JSON body and status < 400 → `dialect.restore_response(body, mapping)`. (Found in slice
+     05: for OpenAI it restores only the documented model-text fields and does nothing to a
+     body without `choices`.)
    - JSON body and status ≥ 400 → `restore_all_strings(body, mapping)`.
    - non-JSON body → returned unchanged.
    - an exception while restoring → `502`, code `restoration_failed`. Never return the
