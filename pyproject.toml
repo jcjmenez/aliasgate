@@ -19,6 +19,9 @@ classifiers = [
 ]
 dependencies = [
     "phonenumbers>=9.0.43",
+    "pydantic>=2.14.3",
+    "pydantic-settings>=2.16.3",
+    "pyyaml>=6.0.3",
 ]
 
 [dependency-groups]
@@ -28,6 +31,7 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.6",
+    "types-pyyaml>=6.0.12.20261113",
 ]
 
 [build-system]

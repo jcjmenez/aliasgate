@@ -21,8 +21,8 @@ uv add --dev types-PyYAML
 
 | File | Action |
 |---|---|
-| `src/aliasgate/config.py` | create |
-| `src/aliasgate/detectors/dictionary.py` | create |
+| `src/aliasgate/config.py` | create (settings and `load_terms`) |
+| `src/aliasgate/detectors/dictionary.py` | create (`Term`, `DictionaryDetector`; standard library only) |
 | `src/aliasgate/factory.py` | create |
 | `examples/aliasgate.example.yaml`, `examples/dictionary.example.yaml` | create |
 | `tests/test_config.py`, `tests/detectors/test_dictionary.py`, `tests/test_factory.py` | create |
@@ -109,9 +109,6 @@ class Term:
     term: str
     entity_type: str
 
-def load_terms(path: Path) -> list[Term]:
-    """Parse and validate a dictionary file."""
-
 class DictionaryDetector:
     name = "dictionary"
     def __init__(self, terms: Sequence[Term]) -> None: ...
@@ -124,12 +121,32 @@ class DictionaryDetector:
   tokens escaped and joined with `\s+`, wrapped once in `(?<!\w)(?:…)(?!\w)` with
   `re.IGNORECASE`. Keep a dict from `normalize_key(term)` to entity type to find the type of a
   match. With zero terms, `detect` returns `[]` without compiling an empty alternation.
+- `re.IGNORECASE` matches `I`/`i` with `İ` (U+0130) and `ı` (U+0131), which `normalize_key`
+  keeps apart, so for such a match the key lookup misses. Then take the first term, in
+  alternation order, with the same token lengths whose own pattern fully matches the surface.
+  Never drop such a match (a missed detection) and never let the lookup fail (every request
+  with that name would be rejected). Do not use one capture group per term to find the term:
+  it makes scanning about 500 times slower.
 - Spans: `source="dictionary"`, `priority=PRIORITY_DICTIONARY`, `score=1.0`.
 - Duplicate terms (same key) with the same type are deduplicated; with different types raise
   `ValueError` naming the 1-based entry indexes, not the term text.
 - Terms with an empty key raise `ValueError`.
+- `Term.__repr__` does not show the term (terms are confidential).
+
+### `load_terms` (in `config.py`)
+
+```python
+def load_terms(path: Path) -> list[Term]:
+    """Parse and validate a dictionary file."""
+```
+
+It lives in `config.py`, not in `detectors/dictionary.py`, because it parses YAML: detectors
+are core modules, and the core has no third-party dependency except `phonenumbers`
+(architecture §1).
+
 - Error messages from `load_terms` refer to entry positions, never to term content (terms are
-  confidential).
+  confidential). A YAML syntax error is reported by line and column only, because PyYAML's own
+  message quotes the offending line.
 
 ### `factory.py`
 
@@ -157,6 +174,8 @@ has three fictional terms. The `.gitignore` already excludes real `aliasgate.yam
   three-letter region, threshold 1.5, `unsupported_content: maybe`.
 - relative dictionary path is resolved against the config file directory (use `tmp_path`).
 - the example file in `examples/` loads without error.
+- `load_terms` on the example file returns three terms; a file missing `type` raises with the
+  entry index.
 
 `test_dictionary.py`
 - a term is found case-insensitively and across a line break between its tokens.
@@ -168,9 +187,9 @@ has three fictional terms. The `.gitignore` already excludes real `aliasgate.yam
 - zero terms → no spans.
 - duplicates: same type deduplicated; different types raise; the message does not contain the
   term.
-- `load_terms` on the example file returns three terms; a file missing `type` raises with the
-  entry index.
-- property: every span returned lies within the text and its surface's key equals a term key.
+- property: every span returned lies within the text and its surface's key equals a term key
+  (for texts without `İ` and `ı`, which have their own test above).
+- `İvan Petrov` and `ıvan petrov` are found and typed like the term `Ivan Petrov`.
 
 `test_factory.py`
 - with a dictionary containing `Juan Pérez` (PERSON) and default rules, the batch

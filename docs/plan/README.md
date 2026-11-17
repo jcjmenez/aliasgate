@@ -15,7 +15,7 @@ Read [AGENTS.md](../../AGENTS.md) first. Its rules apply to every slice.
 | 01 | [slice-01-core-types.md](slice-01-core-types.md) | Spans, placeholder codec, mapping | 00 | done |
 | 02 | [slice-02-rule-detectors.md](slice-02-rule-detectors.md) | Regex and checksum detectors | 01 | done |
 | 03 | [slice-03-engine.md](slice-03-engine.md) | Overlap resolution, engine, `restore` | 01 | done |
-| 04 | [slice-04-config-and-dictionary.md](slice-04-config-and-dictionary.md) | Configuration, company dictionary, allow list | 02, 03 | planned |
+| 04 | [slice-04-config-and-dictionary.md](slice-04-config-and-dictionary.md) | Configuration, company dictionary, allow list | 02, 03 | done |
 | 05 | [slice-05-openai-chat-dialect.md](slice-05-openai-chat-dialect.md) | OpenAI Chat Completions payloads (non-streaming) | 03 | planned |
 | 06 | [slice-06-http-proxy.md](slice-06-http-proxy.md) | Working gateway, non-streaming | 04, 05 | planned |
 | 07 | [slice-07-streaming.md](slice-07-streaming.md) | Stream restorer, SSE, OpenAI streaming | 06 | planned |
