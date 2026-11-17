@@ -67,7 +67,7 @@ regulation. Read the [threat model](docs/threat-model.md) before relying on it.
 | Slice | Deliverable | Status |
 |---|---|---|
 | 00 | Repository scaffold, tooling, CI | done |
-| 01 | Core types, placeholder codec, mapping | planned |
+| 01 | Core types, placeholder codec, mapping | done |
 | 02 | Rule-based detectors with checksums | planned |
 | 03 | Pseudonymisation engine and restoration | planned |
 | 04 | Configuration and company dictionary | planned |

@@ -12,7 +12,7 @@ Read [AGENTS.md](../../AGENTS.md) first. Its rules apply to every slice.
 | # | File | Deliverable | Depends on | Status |
 |---|---|---|---|---|
 | 00 | (this repository) | Scaffold, tooling, CI | – | done |
-| 01 | [slice-01-core-types.md](slice-01-core-types.md) | Spans, placeholder codec, mapping | 00 | planned |
+| 01 | [slice-01-core-types.md](slice-01-core-types.md) | Spans, placeholder codec, mapping | 00 | done |
 | 02 | [slice-02-rule-detectors.md](slice-02-rule-detectors.md) | Regex and checksum detectors | 01 | planned |
 | 03 | [slice-03-engine.md](slice-03-engine.md) | Overlap resolution, engine, `restore` | 01 | planned |
 | 04 | [slice-04-config-and-dictionary.md](slice-04-config-and-dictionary.md) | Configuration, company dictionary, allow list | 02, 03 | planned |
