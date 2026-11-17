@@ -305,7 +305,9 @@ def test_detect_is_deterministic() -> None:
 @pytest.mark.parametrize(
     ("entity_type", "text"),
     [
-        ("EMAIL", "%" * 100_000),
+        # The two cases that were quadratic with the starting-point patterns are sized so that a
+        # regression takes well over the bound (about 30 s locally, longer in CI).
+        ("EMAIL", "%" * 300_000),
         ("EMAIL", "a." * 50_000),
         ("EMAIL", "a@" * 50_000),
         # Validated rules retry every candidate start, so they get smaller inputs.
@@ -314,7 +316,7 @@ def test_detect_is_deterministic() -> None:
         ("CREDIT_CARD", "1-" * 20_000),
         ("IP_ADDRESS", "1." * 50_000),
         ("IP_ADDRESS", "a:" * 50_000),
-        ("SECRET", (PEM_BEGIN + "\n") * 4_000),
+        ("SECRET", (PEM_BEGIN + "\n") * 24_000),
         ("SECRET", "sk-" * 33_000),
         ("SECRET", "ey" + "J." * 50_000),
         ("URL", "http://" * 15_000),
@@ -325,8 +327,9 @@ def test_adversarial_input_is_scanned_in_linear_time(entity_type: str, text: str
     detector = RuleDetector(enabled_types={entity_type}, phone_regions=())
     started = time.perf_counter()
     detector.detect(text)
-    # A quadratic pattern needs minutes on these inputs; linear scanning needs milliseconds.
-    assert time.perf_counter() - started < 2.0
+    # Linear scanning takes at most about 2 s here on a slow CI runner with coverage tracing (the
+    # card cases); a quadratic scan takes over 30 s. The bound sits between the two.
+    assert time.perf_counter() - started < 15.0
 
 
 _PIECES = st.sampled_from([value for _, value in VALID + INVALID] + [" ", ".", "-", "\n", "@", ":"])
