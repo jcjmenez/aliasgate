@@ -17,7 +17,9 @@ classifiers = [
     "Topic :: Security",
     "Typing :: Typed",
 ]
-dependencies = []
+dependencies = [
+    "phonenumbers>=9.0.43",
+]
 
 [dependency-groups]
 dev = [
