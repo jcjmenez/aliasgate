@@ -44,6 +44,12 @@ def audit_outbound(payload: Any, mapping: Mapping, *, min_length: int) -> AuditR
   of the audit: it catches a field the dialect forgot. Keys are not checked.
 - For each non-`LITERAL` entity whose key length is ≥ `min_length`, search with
   `build_term_pattern(entity.surface)`.
+- Known blind spot (found in slices 01 to 04): entity keys use `normalize_key` (full
+  casefold), but `build_term_pattern` uses `re.IGNORECASE` (simple case folding). For the
+  entity `Straße`, the pattern does not match `STRASSE`, so neither propagation nor this audit
+  catches that variant. The reverse also happens: the pattern for `Ivan` matches `İvan` and
+  `ıvan`, whose keys differ. Decide whether to accept this or to fold both sides the same way,
+  and add a test that pins the decision.
 - There are no excluded fields.
 - Tool names, parameter names and `enum` values are
   not pseudonymised (architecture §6.1), so a customer name used as an enum value would trip the
@@ -112,7 +118,10 @@ pseudonymisation happened without reading logs. A count only.
    and assert no entity pattern matches anywhere in its serialised form.
 3. `test_mapping_is_never_serialised`: assert `Mapping` and `Entity` have no `to_json`,
    `model_dump`, `__getstate__` returning surfaces, and that `pickle.dumps(mapping)` raises
-   (implement `__reduce__` to raise `TypeError` in `Mapping`).
+   (implement `__reduce__` to raise `TypeError` in `Mapping`). Note (found in slice 01):
+   `Entity` is a frozen, slotted dataclass, so `dataclasses` already gives it a `__getstate__`
+   that returns all its fields, surface included. Block `Entity` too (for example a
+   `__reduce__` that raises), or this test fails as written.
 4. `test_logs_and_metrics_contain_no_text`: extend the logging hygiene test of slice 06 to both
    dialects, streaming included, and assert that the `/metrics` output contains none of the
    synthetic values.

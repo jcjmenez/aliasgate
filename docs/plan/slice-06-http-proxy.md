@@ -70,7 +70,8 @@ Request flow for a dialect route. Each numbered failure returns the listed statu
    `pseudonymization_failed`.
 6. `prepared.apply(batch.texts)`.
 7. Forward: `POST {base_url}{path}` with the query string, filtered headers and the re-serialised
-   body (`json.dumps(body, ensure_ascii=False).encode()`).
+   body (`json.dumps(body, ensure_ascii=False).encode()`). `Settings` stores `base_url` without
+   a trailing slash (slice 04), so plain concatenation is correct.
    `httpx.TimeoutException` → `504`, code `upstream_timeout`. Other `httpx.HTTPError` → `502`,
    code `upstream_unreachable`.
 8. Upstream response:
@@ -114,6 +115,11 @@ are fixed strings chosen by the gateway.
 - Nothing else about the request is logged at any level. Exceptions are logged with
   `logger.error("...", exc_info=False)` plus the exception **class name** only; a traceback can
   contain local variables' representations in some setups and is not worth the risk.
+- This is not hypothetical (found in slice 03): `DetectionError` is raised `from` the
+  detector's own exception, and that cause's message may contain request text, as
+  `tests/fakes.py::FailingDetector` does on purpose. `str(DetectionError)` and its
+  `detector_name` are safe to log; `__cause__`, `__context__` and tracebacks are not. Extend
+  the logging hygiene test to the `FailingDetector` path.
 
 ### `__main__.py`
 

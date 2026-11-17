@@ -170,6 +170,8 @@ Request side
 - end-to-end with the engine: pseudonymise a fixture conversation where the same name appears in
   the system prompt, a user message, a tool-call argument and a tool result; all four carry the
   same placeholder.
+  (Found in slice 03: `PseudonymizedBatch` equality compares its `Mapping` by identity, because
+  `Mapping` has no `__eq__`. Compare `batch.texts` and `batch.mapping.entities()` instead.)
 
 Response side
 - content, refusal and tool-call arguments are restored; with two choices both are restored.

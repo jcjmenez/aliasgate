@@ -74,6 +74,14 @@ detection:
 `enabled: true` without the `ml` extra installed must fail at start-up with a message that
 names the install command. It must never start and silently skip ML.
 
+State after slice 04: `MLSettings` in `config.py` already has `enabled`, `model`, `threshold`
+(validated in `[0, 1]`) and `labels` (values must be valid entity types), with
+`extra="forbid"`; add the new fields there. `load_settings` deep-merges mappings, so `labels`
+set both in the YAML file and in `ALIASGATE_DETECTION__ML__LABELS` are merged key by key.
+Decide whether the environment should replace the whole mapping instead; either way, test it.
+`build_pseudonymizer` raises `NotImplementedError` when `ml.enabled`; replace that with the
+real wiring and remove its test.
+
 ### `chunking.py`
 
 Models have a limited input length. Long texts are cut into overlapping windows.
