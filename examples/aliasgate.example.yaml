@@ -1,0 +1,47 @@
+# Example aliasgate configuration. Every key is optional; the values shown are the defaults,
+# except detection.dictionary.files, which points at the example dictionary next to this file.
+#
+# Any value can be overridden with an environment variable: prefix ALIASGATE_, "__" between
+# levels, lists and mappings as JSON. Environment values win over this file.
+#   ALIASGATE_LISTEN__PORT=9000
+#   ALIASGATE_DETECTION__ALLOW_LIST='["ACME Corporation"]'
+#
+# Unknown keys are an error, so a typo stops the gateway at start-up instead of being ignored.
+# Do not commit a real configuration or dictionary: they may name real customers.
+
+listen:
+  host: 127.0.0.1            # binding to 0.0.0.0 must be an explicit choice
+  port: 8080
+  max_request_bytes: 10485760
+
+upstreams:
+  openai:
+    base_url: https://api.openai.com      # http or https, no path
+  anthropic:
+    base_url: https://api.anthropic.com
+  timeout_seconds: 600
+  passthrough_paths: []      # forwarded unchanged, e.g. ["GET /v1/models"]; nothing else is
+
+detection:
+  rules:
+    enabled_types: [EMAIL, PHONE, IBAN, CREDIT_CARD, NATIONAL_ID, TAX_ID, IP_ADDRESS, SECRET]
+    phone_regions: [ES, US]  # regions for numbers written without an international prefix
+  dictionary:
+    files:                   # relative paths are resolved against this file's directory
+      - dictionary.example.yaml
+  allow_list: []             # terms never pseudonymised, e.g. your own company name
+  ml:
+    enabled: false           # the ML detector arrives in slice 09
+    model: null
+    threshold: 0.4
+    labels: {}
+  propagate: true            # replace other occurrences of detected values too
+  min_propagation_length: 3
+
+policy:
+  unsupported_content: block # block | pass (pass forwards images and files unprotected)
+  strip_user_identifiers: true
+  tool_definitions: true     # pseudonymise "description" values in tool definitions
+
+logging:
+  level: INFO                # logs never contain request or response text
