@@ -136,7 +136,8 @@ In the request flow of slice 06, replace step 3. When `body.get("stream")` is tr
 - If the client disconnects, Starlette cancels the generator; the `finally` block must close the
   upstream so the provider stops generating.
 - The log line for the request is written when the stream ends, with the transformer's
-  `unresolved` count.
+  `unresolved` count. (Found in slice 06: `_Gateway.dispatch` emits the line when the handler
+  returns. A streamed response must skip that and emit from the generator's `finally`.)
 
 ## Tests
 

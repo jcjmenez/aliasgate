@@ -98,6 +98,10 @@ the tag or publish yourself; the maintainer does that.**
   `messages[].name`; the keys of objects inside tool-call arguments; `response_format` schema
   descriptions; `stop` sequences. Under `unsupported_content: pass`, image, audio and file parts
   are forwarded as they are.
+- Logging (slice 06): one JSON line per request with `request_id`, `route`, `status`,
+  `duration_ms`, `slots`, `entities` and `unresolved_placeholders`. Uvicorn's access log is off.
+  The `httpx` and `httpcore` loggers stay at WARNING, because they would log the forwarded
+  query string and headers. Say that lowering them breaks the logging rule.
 
 `docs/deployment.md`
 - Network placement: inside the trust boundary, the only egress path to the provider (block
