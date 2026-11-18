@@ -1,0 +1,46 @@
+{
+  "id": "msg_example01",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-example",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "Mail [PERSON_1] at [EMAIL_1].",
+      "signature": "c2lnbmF0dXJlLWV4YW1wbGU="
+    },
+    {"type": "redacted_thinking", "data": "cmVkYWN0ZWQtZXhhbXBsZQ=="},
+    {
+      "type": "text",
+      "text": "I will write to [PERSON_1] at [EMAIL_1].",
+      "citations": [
+        {
+          "type": "char_location",
+          "cited_text": "[PERSON_1]",
+          "document_index": 0,
+          "document_title": "[ORG_1]",
+          "start_char_index": 0,
+          "end_char_index": 10
+        }
+      ]
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_example01",
+      "name": "send_email",
+      "input": {
+        "to": "[EMAIL_1]",
+        "body": {"greeting": "Dear [PERSON_1]", "lines": ["[person_1]", 7, null, true]}
+      }
+    },
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_example01",
+      "name": "web_search",
+      "input": {"query": "[ORG_1]"}
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 120, "output_tokens": 45, "cache_read_input_tokens": 0}
+}

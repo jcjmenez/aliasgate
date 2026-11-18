@@ -26,6 +26,7 @@ from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from aliasgate.config import PolicySettings, Settings
+from aliasgate.dialects.anthropic_messages import AnthropicMessagesDialect
 from aliasgate.dialects.base import (
     Dialect,
     MalformedRequestError,
@@ -52,6 +53,11 @@ _logger: Final = logging.getLogger("aliasgate.proxy")
 _METHODS: Final = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 _HEALTH: Final = ("GET", "/healthz")
 _CHAT_COMPLETIONS: Final = "/v1/chat/completions"
+_MESSAGES: Final = "/v1/messages"
+_COUNT_TOKENS: Final = "/v1/messages/count_tokens"
+# A request carrying one of these headers comes from an Anthropic client: errors raised before
+# a route is chosen (an unknown endpoint) use the Anthropic error shape.
+_ANTHROPIC_HEADERS: Final = ("anthropic-version", "x-api-key")
 _UNKNOWN_ROUTE: Final = "unknown"
 # httpx logs every request URL at INFO, query string included; httpcore logs headers at DEBUG.
 _QUIET_LOGGERS: Final = ("httpx", "httpcore")
@@ -128,9 +134,21 @@ class _RequestLog:
 
 @dataclass(frozen=True, slots=True)
 class _DialectRoute:
+    """A route the gateway pseudonymises. With `request_only`, the body's `stream` is not
+    honoured and a successful answer is returned unchanged (it holds no text)."""
+
     dialect: Dialect
     base_url: str
     path: str
+    request_only: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _PassthroughRoute:
+    """A route forwarded unchanged to one upstream; its errors use that upstream's dialect."""
+
+    dialect: Dialect
+    base_url: str
 
 
 def _policy(settings: PolicySettings) -> Policy:
@@ -268,22 +286,31 @@ class _Gateway:
         self._pseudonymizer = pseudonymizer
         self._policy = _policy(settings.policy)
         self._openai = OpenAIChatDialect()
-        openai_url = settings.upstreams.openai.base_url
+        self._anthropic = AnthropicMessagesDialect()
+        upstreams = settings.upstreams
+        openai_url, anthropic_url = upstreams.openai.base_url, upstreams.anthropic.base_url
         self._routes: dict[tuple[str, str], _DialectRoute] = {
             ("POST", _CHAT_COMPLETIONS): _DialectRoute(self._openai, openai_url, _CHAT_COMPLETIONS),
+            ("POST", _MESSAGES): _DialectRoute(self._anthropic, anthropic_url, _MESSAGES),
+            ("POST", _COUNT_TOKENS): _DialectRoute(
+                self._anthropic, anthropic_url, _COUNT_TOKENS, request_only=True
+            ),
         }
-        self._passthrough = frozenset(
-            (method, path)
-            for method, _, path in (
-                entry.partition(" ") for entry in settings.upstreams.passthrough_paths
-            )
-        )
+        by_upstream = {
+            "openai": _PassthroughRoute(self._openai, openai_url),
+            "anthropic": _PassthroughRoute(self._anthropic, anthropic_url),
+        }
+        self._passthrough: dict[tuple[str, str], _PassthroughRoute] = {}
+        for entry in upstreams.passthrough_paths:
+            upstream, method, path = entry.split(" ", 2)
+            self._passthrough[(method, path)] = by_upstream[upstream]
 
     async def dispatch(self, request: Request) -> Response:
         """Answer one request. Never raises; every response carries the request id."""
         log = _RequestLog()
         key = (request.method, request.scope["path"])
-        dialect: Dialect = self._openai
+        anthropic_client = any(name in request.headers for name in _ANTHROPIC_HEADERS)
+        dialect: Dialect = self._anthropic if anthropic_client else self._openai
         try:
             if key == _HEALTH:
                 log.route = " ".join(key)
@@ -292,9 +319,10 @@ class _Gateway:
                 log.route = " ".join(key)
                 dialect = route.dialect
                 response = await self._dialect_flow(request, route, log)
-            elif key in self._passthrough:
+            elif (passthrough := self._passthrough.get(key)) is not None:
                 log.route = " ".join(key)
-                response = await self._passthrough_flow(request, key, log)
+                dialect = passthrough.dialect
+                response = await self._passthrough_flow(request, passthrough, key[0], log)
             else:
                 raise errors.unknown_endpoint()
         except GatewayError as error:
@@ -315,7 +343,7 @@ class _Gateway:
         self, request: Request, route: _DialectRoute, log: _RequestLog
     ) -> Response:
         body = _parse_object(await self._read_body(request))
-        streaming = bool(body.get("stream"))
+        streaming = not route.request_only and bool(body.get("stream"))
         try:
             prepared = route.dialect.prepare_request(body, self._policy)
         except UnsupportedContentError as exc:
@@ -336,6 +364,8 @@ class _Gateway:
             request, "POST", url, _encode(body), log, json_content=True, stream=streaming
         )
         if not streaming:
+            if route.request_only and upstream.status_code < 400:
+                return _upstream_response(upstream, upstream.content)
             return self._restored(upstream, route.dialect, batch.mapping, log)
         if (
             upstream.status_code < 400
@@ -355,11 +385,10 @@ class _Gateway:
         return self._restored(upstream, route.dialect, batch.mapping, log)
 
     async def _passthrough_flow(
-        self, request: Request, key: tuple[str, str], log: _RequestLog
+        self, request: Request, route: _PassthroughRoute, method: str, log: _RequestLog
     ) -> Response:
-        method, path = key
         raw = await self._read_body(request)
-        url = self._settings.upstreams.openai.base_url + path
+        url = route.base_url + request.scope["path"]
         upstream = await self._forward(request, method, url, raw or None, log, json_content=False)
         return _upstream_response(upstream, upstream.content)
 

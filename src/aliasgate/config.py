@@ -68,7 +68,10 @@ def _base_url(value: str) -> str:
 BaseUrl = Annotated[str, AfterValidator(_base_url)]
 EntityType = Annotated[str, AfterValidator(validate_entity_type)]
 PhoneRegion = Annotated[str, StringConstraints(pattern=r"^[A-Z]{2}$")]
-PassthroughPath = Annotated[str, StringConstraints(pattern=r"^(GET|POST|DELETE) /\S*$")]
+# "<upstream> <METHOD> <path>": the upstream is a field name of UpstreamsSettings.
+PassthroughPath = Annotated[
+    str, StringConstraints(pattern=r"^(openai|anthropic) (GET|POST|DELETE) /\S*$")
+]
 
 
 class _Section(BaseModel):
@@ -91,12 +94,25 @@ class UpstreamSettings(_Section):
 
 
 class UpstreamsSettings(_Section):
-    """Providers the gateway forwards to, and the extra paths it may forward unchanged."""
+    """Providers the gateway forwards to, and the extra paths it may forward unchanged.
+
+    A passthrough entry is `"<upstream> <METHOD> <path>"`, for example
+    `"anthropic GET /v1/models"`; each method and path appears in at most one entry, so a
+    request names exactly one upstream.
+    """
 
     openai: UpstreamSettings = UpstreamSettings(base_url="https://api.openai.com")
     anthropic: UpstreamSettings = UpstreamSettings(base_url="https://api.anthropic.com")
     timeout_seconds: float = Field(default=600, gt=0)
     passthrough_paths: tuple[PassthroughPath, ...] = ()
+
+    @field_validator("passthrough_paths")
+    @classmethod
+    def _one_upstream_per_path(cls, entries: tuple[str, ...]) -> tuple[str, ...]:
+        routes = [entry.split(" ", 1)[1] for entry in entries]
+        if len(set(routes)) != len(routes):
+            raise ValueError("each method and path may appear in only one entry")
+        return entries
 
 
 class RulesSettings(_Section):

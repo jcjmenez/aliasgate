@@ -29,7 +29,7 @@ BASE_URL_IDS = ["path", "path-with-trailing-slash", "encoded-slash", "encoded-lo
 def _settings(base_url: str) -> Settings:
     env = {
         "ALIASGATE_UPSTREAMS__OPENAI__BASE_URL": base_url,
-        "ALIASGATE_UPSTREAMS__PASSTHROUGH_PATHS": '["GET /v1/models"]',
+        "ALIASGATE_UPSTREAMS__PASSTHROUGH_PATHS": '["openai GET /v1/models"]',
     }
     return load_settings(None, env=env)
 

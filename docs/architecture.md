@@ -295,14 +295,26 @@ array order, then tool definitions last (so adding a tool does not renumber the 
 | `POST /v1/messages` | `anthropic_messages` | `https://api.anthropic.com` |
 | `POST /v1/messages/count_tokens` | `anthropic_messages` (request side only) | same |
 
-Any other path returns 404 unless it is listed in `passthrough_paths` (for example
-`GET /v1/models`). Unknown endpoints are never forwarded by default, because an endpoint the
-gateway does not understand cannot be pseudonymised.
+`count_tokens` is request side only: its body is pseudonymised like a message request, a
+`stream` field in it is not honoured, and a successful answer, which holds only token counts, is
+returned unchanged. Its error answers are restored like those of any other route.
+
+Any other path returns 404 unless it is listed in `passthrough_paths` as
+`"<upstream> <METHOD> <path>"`, for example `"anthropic GET /v1/models"`, which forwards it
+unchanged to that upstream. A method and path may appear in only one entry, so that the path
+alone names the upstream. Unknown endpoints are never forwarded by default, because an endpoint
+the gateway does not understand cannot be pseudonymised.
+
+Errors the gateway answers itself use the error shape of the route's dialect; a passthrough
+entry uses the dialect of its upstream. A request that matches no route gets the Anthropic shape
+when it carries an `anthropic-version` or `x-api-key` header, and the OpenAI shape otherwise.
 
 The route path is appended to the upstream's `base_url`, which may end in a base path (§7). The
 routes the client sees do not change: with `base_url: https://<resource>.openai.azure.com/openai`,
 `POST /v1/chat/completions` is forwarded to
-`https://<resource>.openai.azure.com/openai/v1/chat/completions`.
+`https://<resource>.openai.azure.com/openai/v1/chat/completions`. Likewise Claude in Microsoft
+Foundry serves the Messages API under `/anthropic/v1/`, so its `base_url` is
+`https://<resource>.services.ai.azure.com/anthropic`.
 
 ## 7. Proxy
 

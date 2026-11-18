@@ -32,7 +32,7 @@ def settings(tmp_path: Path) -> Settings:
     )
     config = {
         "detection": {"dictionary": {"files": ["dictionary.yaml"]}},
-        "upstreams": {"passthrough_paths": ["GET /v1/models"]},
+        "upstreams": {"passthrough_paths": ["openai GET /v1/models"]},
     }
     path = tmp_path / "aliasgate.yaml"
     path.write_text(yaml.safe_dump(config), encoding="utf-8")

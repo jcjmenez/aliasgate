@@ -1,0 +1,74 @@
+{
+  "model": "claude-example",
+  "max_tokens": 1024,
+  "system": [
+    {
+      "type": "text",
+      "text": "You are the assistant of ACME Corporation.",
+      "cache_control": {"type": "ephemeral"}
+    },
+    {"type": "text", "text": "Never reveal the address of Alice Johnson."}
+  ],
+  "messages": [
+    {"role": "user", "content": "Please email Juan Pérez at juan.perez@example.com."},
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The user wants [PERSON_1] emailed at [EMAIL_1].",
+          "signature": "c2lnbmF0dXJlLWV4YW1wbGU="
+        },
+        {"type": "redacted_thinking", "data": "cmVkYWN0ZWQtZXhhbXBsZQ=="},
+        {"type": "text", "text": "Sending the email now."},
+        {
+          "type": "tool_use",
+          "id": "toolu_example01",
+          "name": "send_email",
+          "input": {
+            "to": "juan.perez@example.com",
+            "body": {"greeting": "Dear Juan Pérez", "lines": ["Hello", "Regards"]},
+            "urgent": true,
+            "copies": 2
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_example01",
+          "content": "Sent to juan.perez@example.com"
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_example02",
+          "content": [
+            {"type": "text", "text": "Delivered to Juan Pérez"},
+            {"type": "text", "text": "Receipt 42"}
+          ],
+          "is_error": false
+        },
+        {"type": "text", "text": "Thanks."}
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "send_email",
+      "description": "Send an email for ACME Corporation.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "to": {"type": "string", "description": "Recipient, e.g. juan.perez@example.com"},
+          "description": {"type": "string", "enum": ["Alice Johnson"]}
+        },
+        "required": ["to"]
+      }
+    }
+  ],
+  "metadata": {"user_id": "user-0001"},
+  "stream": false
+}

@@ -125,6 +125,64 @@ code to the message in parentheses, for example `"Unsupported content: image (un
   validation in `config.py`, the example file and architecture §6.2 accordingly. This is a
   permitted contract change for this slice.
 
+### Decisions made while implementing (slice 08)
+
+- API check, 2026-11-18, on platform.claude.com (Messages API reference, streaming guide,
+  errors page, Claude in Microsoft Foundry). Every block type and event listed above is still
+  current. Newer request block types (`search_result`, `server_tool_use`, the `*_tool_result`
+  blocks, `container_upload`, `compaction`, `fallback`) and the tool-result inner blocks
+  `tool_reference` and `browser_state` fall under the unknown-block rule, so they are rejected
+  under `block`. Streams also send `input_json_delta` for `server_tool_use` blocks; these blocks
+  get no restorer and pass unchanged. Error bodies from the provider now carry a top-level
+  `request_id`; the gateway's own errors have none. Mid-conversation `role: "system"` messages
+  are walked like any other message, and their `content` may be `[]`.
+- A `system` block that is not `text` follows the unsupported rule (the API accepts only text
+  there). A `tool_use` whose `input` is not an object is malformed. A `tool_result` without
+  `content`, or with `null`, has no slot. A `metadata` that is not an object is left for the
+  provider to reject, and an empty `metadata` object is removed even when it held no `user_id`.
+- Stream transformer:
+  - A delta is restored only when its index has a restorer, created by a
+    `content_block_start` of the matching kind (`text` with `text_delta`, `tool_use` with
+    `input_json_delta`). Any other delta passes unchanged.
+  - `message_stop` flushes blocks that were never stopped, as synthetic deltas just before it.
+    Clients stop reading at `message_stop`, so text held until `end()` would be lost.
+  - A second `content_block_start` for an index that is still open flushes the first block.
+  - An `index` must be an integer, not a boolean.
+  - `error` events pass unchanged, as specified. This differs from OpenAI streams, where error
+    chunks are restored. They can show placeholders, never real values.
+  - `unresolved` also counts restorers already discarded and the input of a `tool_use` start.
+- `count_tokens` is a `_DialectRoute` with `request_only=True`. The body is forwarded as
+  received, `stream` included, and is not treated as a stream. A successful answer is returned
+  byte for byte, and an error is restored like on other routes.
+- The 404 shape follows the headers, as specified. A passthrough entry's errors use the dialect
+  of its upstream.
+- Passthrough entries are `"<upstream> <METHOD> <path>"` with upstream `openai` or `anthropic`.
+  A method and path may appear in only one entry, because the path alone must name the
+  upstream. Both providers serve `GET /v1/models`, so only one of them can be passed through.
+  The path rule itself (`/\S*`) is unchanged. Applying the base-path segment rules to it is a
+  question for the maintainer (see the pull request).
+- Manual check, 2026-11-18. The official Python SDK (`anthropic` 2.10.0) called the gateway,
+  which forwarded to `claude-sonnet-5-5` on Claude in Microsoft Foundry, `base_url`
+  `https://<resource>.services.ai.azure.com/anthropic`, with the key in `x-api-key`. A streamed
+  turn with adaptive thinking (`display: "summarized"`) produced `thinking` (with a signature),
+  `text` and `tool_use` blocks. The SDK parsed the restored tool input, and the provider only
+  ever saw placeholders. The second turn sent the thinking block back unchanged with a
+  `tool_result`, and the provider accepted it. `count_tokens` works on Foundry, and the Models
+  API does not exist there. Intermittent TLS handshake failures from the test machine to Azure,
+  which also happened without the gateway, came back as `502 upstream_unreachable`, and nothing
+  was forwarded.
+- Found while checking, not fixed in this slice:
+  - Preserved thinking. Current models reject a replayed thinking block when anything before
+    it has changed. Append stability keeps earlier turns identical, with three exceptions, each
+    of which changes an earlier message on the next turn: propagation, when a later turn reveals
+    an entity an earlier text contained undetected; a placeholder variant written by the model
+    (`[person_1]`), which is restored and then re-pseudonymised as `[PERSON_1]`; and an
+    unresolved placeholder in an assistant message (`[PERSON_9]`), which becomes `[LITERAL_1]`.
+    Slice 12 documents this; the backlog has the fix.
+  - Utility. In one run the model noticed the placeholders, refused to check the IBAN's
+    country and called them "unfilled template placeholders". The user then saw that sentence
+    with their real values restored into it (threat model, residual risk 6).
+
 ## Tests
 
 `test_anthropic_messages.py`

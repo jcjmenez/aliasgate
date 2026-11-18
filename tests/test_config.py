@@ -135,8 +135,13 @@ def test_unknown_aliasgate_environment_variable_is_rejected(name: str) -> None:
         "upstreams:\n  openai:\n    base_url: https://api.example.com/?x=1\n",
         "upstreams:\n  openai:\n    base_url: https://user:pass@api.example.com\n",
         "upstreams:\n  openai:\n    base_url: https://\n",
-        "upstreams:\n  passthrough_paths: [PATCH /v1/models]\n",
-        "upstreams:\n  passthrough_paths: [GET v1/models]\n",
+        "upstreams:\n  passthrough_paths: [openai PATCH /v1/models]\n",
+        "upstreams:\n  passthrough_paths: [openai GET v1/models]\n",
+        "upstreams:\n  passthrough_paths: [GET /v1/models]\n",
+        "upstreams:\n  passthrough_paths: [mistral GET /v1/models]\n",
+        "upstreams:\n  passthrough_paths: [OpenAI GET /v1/models]\n",
+        "upstreams:\n  passthrough_paths: [openai  GET /v1/models]\n",
+        "upstreams:\n  passthrough_paths: [openai GET /v1/models, anthropic GET /v1/models]\n",
         "upstreams:\n  timeout_seconds: 0\n",
         "listen:\n  port: 0\n",
         "listen:\n  max_request_bytes: 0\n",
@@ -156,6 +161,11 @@ def test_unknown_aliasgate_environment_variable_is_rejected(name: str) -> None:
         "url-without-host",
         "passthrough-method",
         "passthrough-path",
+        "passthrough-without-upstream",
+        "passthrough-unknown-upstream",
+        "passthrough-upstream-case",
+        "passthrough-double-space",
+        "passthrough-same-path-twice",
         "timeout-zero",
         "port-zero",
         "max-request-bytes-zero",
@@ -363,11 +373,25 @@ def test_property_an_accepted_base_url_plus_a_route_path_is_sent_exactly_as_conc
 
 
 def test_valid_passthrough_paths_are_accepted() -> None:
-    env = {"ALIASGATE_UPSTREAMS__PASSTHROUGH_PATHS": '["GET /v1/models", "DELETE /v1/files/x"]'}
+    entries = '["openai GET /v1/models", "anthropic DELETE /v1/files/x", "anthropic POST /v1/x"]'
+    env = {"ALIASGATE_UPSTREAMS__PASSTHROUGH_PATHS": entries}
     assert load_settings(None, env=env).upstreams.passthrough_paths == (
-        "GET /v1/models",
-        "DELETE /v1/files/x",
+        "openai GET /v1/models",
+        "anthropic DELETE /v1/files/x",
+        "anthropic POST /v1/x",
     )
+
+
+def test_the_same_path_with_two_methods_may_be_listed() -> None:
+    env = {"ALIASGATE_UPSTREAMS__PASSTHROUGH_PATHS": '["openai GET /v1/x", "openai DELETE /v1/x"]'}
+    assert len(load_settings(None, env=env).upstreams.passthrough_paths) == 2
+
+
+def test_a_repeated_passthrough_path_error_does_not_repeat_the_path() -> None:
+    entries = '["openai GET /v1/secret-path", "openai GET /v1/secret-path"]'
+    with pytest.raises(ValidationError) as excinfo:
+        load_settings(None, env={"ALIASGATE_UPSTREAMS__PASSTHROUGH_PATHS": entries})
+    assert "secret-path" not in str(excinfo.value)
 
 
 def test_relative_dictionary_paths_are_resolved_against_the_config_directory(
@@ -424,11 +448,15 @@ def test_example_config_loads_and_points_at_the_example_dictionary() -> None:
     assert settings.detection.dictionary.files[0].is_file()
 
 
-def test_the_commented_azure_base_url_in_the_example_config_is_valid() -> None:
+def test_the_commented_azure_base_urls_in_the_example_config_are_valid() -> None:
     text = (EXAMPLES / "aliasgate.example.yaml").read_text(encoding="utf-8")
     commented = re.findall(r"^\s*# base_url: (\S+)$", text, flags=re.MULTILINE)
-    assert commented == ["https://YOUR-RESOURCE.openai.azure.com/openai"]
-    assert UpstreamSettings(base_url=commented[0]).base_url == commented[0]
+    assert commented == [
+        "https://YOUR-RESOURCE.openai.azure.com/openai",
+        "https://YOUR-RESOURCE.services.ai.azure.com/anthropic",
+    ]
+    for base_url in commented:
+        assert UpstreamSettings(base_url=base_url).base_url == base_url
 
 
 # Dictionary files -----------------------------------------------------------------------------
