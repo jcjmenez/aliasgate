@@ -20,7 +20,7 @@ Read [AGENTS.md](../../AGENTS.md) first. Its rules apply to every slice.
 | 06 | [slice-06-http-proxy.md](slice-06-http-proxy.md) | Working gateway, non-streaming | 04, 05 | done |
 | 07 | [slice-07-streaming.md](slice-07-streaming.md) | Stream restorer, SSE, OpenAI streaming | 06 | done |
 | 08 | [slice-08-anthropic-dialect.md](slice-08-anthropic-dialect.md) | Anthropic Messages, streaming included | 07 | done |
-| 09 | [slice-09-ml-detector.md](slice-09-ml-detector.md) | GLiNER detector, detection cache | 04 | planned |
+| 09 | [slice-09-ml-detector.md](slice-09-ml-detector.md) | GLiNER detector, detection cache | 04 | done |
 | 10 | [slice-10-audit-policy-metrics.md](slice-10-audit-policy-metrics.md) | Leak audit, metrics, logging invariant | 08 | planned |
 | 11 | [slice-11-evaluation.md](slice-11-evaluation.md) | Evaluation harness and CI recall gate | 04 | planned |
 | 12 | [slice-12-cli-docker-release.md](slice-12-cli-docker-release.md) | CLI, Docker image, usage docs, v0.1.0 | 09, 10, 11 | planned |

@@ -67,6 +67,13 @@ A detector that fails raises; it never returns a partial result silently.
 An **allow list** (terms never to pseudonymise, for example the deploying company's own name) is
 applied after detection: any span whose key equals an allow-list key is dropped.
 
+The **ML layer** (`detectors/gliner.py`) cuts long texts into overlapping windows
+(`detectors/chunking.py`). A window holds at most `window_words` words as the model counts them
+(a run of word characters, or one punctuation mark), because GLiNER silently drops every word
+after its input limit. A window longer than the model accepts is an error, not a truncation,
+and the factory runs one whole window at start-up to prove the configured size fits. Results
+from overlapping windows are deduplicated; overlapping spans are left to the resolver.
+
 ### 3.3 Overlap resolution (`resolve.py`)
 
 Input: all spans for one text. Output: a list of non-overlapping spans sorted by `start`.
@@ -367,7 +374,9 @@ Exceptions are logged by class name only, and the JSON formatter never renders a
 ## 9. Configuration
 
 One YAML file plus environment overrides (`ALIASGATE_` prefix, `__` for nesting), validated with
-pydantic. Invalid configuration stops the process at start-up. The complete schema is specified
+pydantic. Invalid configuration stops the process at start-up. Sections merge key by key, the
+environment winning over the file; any other value, lists and mappings such as `ml.labels`
+included, is replaced as a whole. The complete schema is specified
 in [plan/slice-04-config-and-dictionary.md](plan/slice-04-config-and-dictionary.md). Upstream
 base URLs may carry a base path (§7).
 

@@ -46,7 +46,16 @@ DEFAULTS = {
         },
         "dictionary": {"files": ()},
         "allow_list": (),
-        "ml": {"enabled": False, "model": None, "threshold": 0.4, "labels": {}},
+        "ml": {
+            "enabled": False,
+            "model": "urchade/gliner_multi_pii-v1",
+            "revision": "1fcf13e85f4eef5394e1fcd406cf2ca9ea82351d",
+            "threshold": 0.4,
+            "labels": {"person": "PERSON", "organization": "ORG", "address": "ADDRESS"},
+            "window_words": 250,
+            "overlap_words": 50,
+            "cache_entries": 4096,
+        },
         "propagate": True,
         "min_propagation_length": 3,
     },
@@ -101,6 +110,40 @@ def test_environment_lists_and_mappings_are_json(tmp_path: Path) -> None:
     assert settings.detection.allow_list == ("ACME Corporation", "Globex S.L.")
     assert settings.detection.ml.labels == {"person": "PERSON"}
     assert settings.policy.unsupported_content == "pass"
+
+
+def test_environment_ml_labels_replace_the_files_labels(tmp_path: Path) -> None:
+    path = _config(tmp_path, "detection:\n  ml:\n    labels: {person: PERSON, company: ORG}\n")
+    env = {"ALIASGATE_DETECTION__ML__LABELS": '{"address": "ADDRESS"}'}
+    assert load_settings(path, env=env).detection.ml.labels == {"address": "ADDRESS"}
+
+
+def test_file_ml_labels_replace_the_default_labels(tmp_path: Path) -> None:
+    path = _config(tmp_path, "detection:\n  ml:\n    labels: {person: PERSON}\n")
+    assert load_settings(path, env={}).detection.ml.labels == {"person": "PERSON"}
+
+
+def test_environment_overrides_the_ml_section_key_by_key(tmp_path: Path) -> None:
+    path = _config(
+        tmp_path, "detection:\n  ml:\n    threshold: 0.5\n    labels: {person: PERSON}\n"
+    )
+    settings = load_settings(path, env={"ALIASGATE_DETECTION__ML__ENABLED": "true"})
+    ml = settings.detection.ml
+    assert (ml.enabled, ml.threshold, ml.labels) == (True, 0.5, {"person": "PERSON"})
+
+
+def test_a_section_given_as_json_in_the_environment_still_merges_key_by_key(
+    tmp_path: Path,
+) -> None:
+    path = _config(tmp_path, "detection:\n  ml:\n    threshold: 0.5\n")
+    settings = load_settings(path, env={"ALIASGATE_DETECTION__ML": '{"enabled": true}'})
+    assert (settings.detection.ml.enabled, settings.detection.ml.threshold) == (True, 0.5)
+
+
+def test_ml_revision_may_be_null_for_a_local_model(tmp_path: Path) -> None:
+    path = _config(tmp_path, "detection:\n  ml:\n    model: /models/gliner\n    revision: null\n")
+    ml = load_settings(path, env={}).detection.ml
+    assert (ml.model, ml.revision) == ("/models/gliner", None)
 
 
 def test_unrelated_environment_variables_are_ignored() -> None:
@@ -158,6 +201,16 @@ def test_unknown_aliasgate_environment_variable_is_rejected(name: str) -> None:
         "detection:\n  rules:\n    phone_regions: [es]\n",
         "detection:\n  ml:\n    threshold: 1.5\n",
         "detection:\n  ml:\n    labels: {person: person}\n",
+        "detection:\n  ml:\n    labels: {}\n",
+        "detection:\n  ml:\n    labels: {'': PERSON}\n",
+        "detection:\n  ml:\n    model: ''\n",
+        "detection:\n  ml:\n    model: null\n",
+        "detection:\n  ml:\n    revision: ''\n",
+        "detection:\n  ml:\n    window_words: 0\n",
+        "detection:\n  ml:\n    overlap_words: -1\n",
+        "detection:\n  ml:\n    window_words: 50\n",
+        "detection:\n  ml:\n    window_words: 10\n    overlap_words: 20\n",
+        "detection:\n  ml:\n    cache_entries: -1\n",
         "detection:\n  min_propagation_length: 0\n",
         "policy:\n  unsupported_content: maybe\n",
         "logging:\n  level: LOUD\n",
@@ -182,6 +235,16 @@ def test_unknown_aliasgate_environment_variable_is_rejected(name: str) -> None:
         "lower-case-region",
         "threshold-above-one",
         "lower-case-label-type",
+        "no-labels",
+        "empty-label",
+        "empty-model",
+        "null-model",
+        "empty-revision",
+        "window-zero",
+        "overlap-negative",
+        "overlap-equal-to-window",
+        "overlap-larger-than-window",
+        "cache-entries-negative",
         "min-propagation-zero",
         "unsupported-content-maybe",
         "log-level",

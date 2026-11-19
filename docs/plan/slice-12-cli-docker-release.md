@@ -61,6 +61,11 @@ aliasgate version
 - Build argument `EXTRAS` (default empty; `ml` adds the ML extra). The ML image pre-downloads
   the pinned model at build time into the image so that the container needs no internet access
   to Hugging Face at run time, and sets `HF_HUB_OFFLINE=1`.
+  (Found in slice 09: loading `urchade/gliner_multi_pii-v1` also downloads the config and
+  tokenizer of `microsoft/mdeberta-v3-base`, at its default branch, unpinned. Pre-download by
+  building the detector once, with `load_gliner` and the configured model and revision, so that
+  both land in the cache, and then check that the image starts with `HF_HUB_OFFLINE=1`. The ML
+  extra needs `protobuf` for that tokenizer.)
 - No configuration or dictionary is baked in. They are mounted.
 - Pin base images by digest.
 
@@ -87,7 +92,11 @@ the tag or publish yourself; the maintainer does that.**
   Anthropic SDK (`base_url="http://localhost:8080"`), environment variables
   (`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`), with the runnable examples.
 - Writing a dictionary and an allow list. Tuning: which entity types to enable, the ML
-  threshold, when to turn propagation off.
+  threshold, when to turn propagation off. (Found in slice 09: document the ML section,
+  installing the `ml` extra, the model licence and its languages, and pinning `revision` with
+  `model` (`null` for a local directory). `window_words` counts model words, where a
+  punctuation mark is one word, and stays at or below the model's limit of 384. Say that
+  `ALIASGATE_DETECTION__ML__LABELS` replaces the file's labels.)
 - What the user will notice: placeholders in model reasoning, unresolved placeholders, tasks
   that degrade (list from the threat model), rejected images and files.
 - Every error code the gateway can return, with cause and remedy, in one table.
@@ -128,7 +137,10 @@ the tag or publish yourself; the maintainer does that.**
 - TLS and client authentication are delegated to the ingress or service mesh.
 - Do not expose `/metrics`. Metrics list and suggested alerts (`leak_audit_failures_total > 0`,
   rising `unresolved_placeholders_total`, `rejections_total` by code).
-- Resource sizing with and without ML, from your measurements.
+- Resource sizing with and without ML, from your measurements. (Found in slice 09, on an
+  Apple M5 Pro CPU: one loaded model takes about 1.5 GB of resident memory, start-up with the
+  model cached takes about 7 s, and 200 words take about 140 ms. Detection runs one inference
+  at a time per process.)
 - A deployment checklist that ends with: run the evaluation on your own samples and review the
   threat model with your DPO.
 

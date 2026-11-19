@@ -162,6 +162,61 @@ When `ml.enabled`: load the model at start-up, wrap the detector in `CachedDetec
 it after the rules detector. Run one warm-up prediction on a fixed synthetic sentence so the
 first real request is not slow and a broken model fails at start-up.
 
+### Decisions made while implementing (slice 09)
+
+- Checked on 2026-11-19. `gliner` 0.2.30 (PyPI, 2026-10-31, Python >= 3.10) installs torch
+  2.15.0 and transformers 5.22.2. Its API is as described:
+  `GLiNER.from_pretrained(model_id, revision=...)` and
+  `predict_entities(text, labels, flat_ner=True, threshold=0.5, ...)`, which returns dicts with
+  `start`, `end`, `text`, `label` and `score`. `threshold` is the fourth parameter, after
+  `flat_ner`, so it is always passed by keyword.
+- Model: `urchade/gliner_multi_pii-v1` at revision `1fcf13e85f4eef5394e1fcd406cf2ca9ea82351d`.
+  The model card says Apache-2.0 and covers en, fr, de, es, pt and it. Its training set
+  (`urchade/synthetic-pii-ner-mistral-v1`) is Apache-2.0 and its base encoder
+  (`microsoft/mdeberta-v3-base`) is MIT. GLiNER2 models such as
+  `fastino/gliner2-privacy-filter-PII-multi` need the separate `gliner2` package, so they were
+  not candidates. Loading the model also fetches the config and tokenizer of
+  `microsoft/mdeberta-v3-base` at its default branch. The revision pin does not cover that
+  download.
+- The `ml` extra also lists `protobuf`, decided with the maintainer. With transformers 5.x,
+  converting mdeberta's sentencepiece tokenizer needs it, and without it the model does not
+  load.
+- Windows count GLiNER's own word unit, decided with the maintainer. That unit is
+  `\w+(?:[-_]\w+)*|\S`: a run of word characters, or one punctuation mark. Whitespace-separated
+  words, as first specified, would leak. GLiNER keeps only the first `max_len` (384) of its
+  words and drops the rest with nothing but a warning. A text of 206 whitespace-separated words
+  of CSV (1,408 GLiNER words, so one window) lost the names at its end. Counting the model's
+  unit makes `window_words` a real bound. `load_gliner` returns an adapter that refuses any
+  text over the model's `max_len`, so a truncation is an error and never a silent miss. The
+  warm-up runs one whole window, so a `window_words` the model cannot take stops the gateway at
+  start-up.
+- `GlinerDetector.__init__` takes `model_id` (keyword, required) and `revision` (keyword,
+  default `None`). The fingerprint must name the model, and the model object does not know its
+  own id.
+- `EntityModel.predict_entities` returns `list[dict[str, object]]`, not `dict[str, Any]`,
+  because AGENTS.md allows no `Any` in core modules. Every result is checked. Offsets must be
+  integers (not booleans) inside the window and the score must be a number, or detection
+  raises. That is fail closed. Results whose label is not configured are ignored. Spans with
+  the same offsets but different types are sorted by entity type, so the output does not
+  depend on the model's order.
+- The detector validates its settings at construction: at least one non-empty label, valid
+  entity types, a threshold in `[0, 1]`, and `0 <= overlap_words < window_words`.
+- The cache encodes the key with `"surrogatepass"`. JSON allows unpaired surrogate escapes,
+  plain UTF-8 refuses them, and the encoding stays injective. A failed detection counts as a
+  miss. With `max_entries == 0` every call is a miss.
+- Configuration: `model` and `revision` are non-empty strings, and `revision` may be `null`
+  for a local model directory. `labels` needs at least one entry, with non-empty keys. Sections
+  still merge key by key, file then environment. Any other value is replaced, and that now
+  includes mappings: `ALIASGATE_DETECTION__ML__LABELS` replaces the file's `labels` and does not
+  merge with it, so the environment can also remove a label. `model: null` is no longer valid,
+  and the example configuration shows the new defaults.
+- Measured on 2026-11-19 on an Apple M5 Pro CPU (torch 2.15.0, no GPU). The default settings
+  take 140 ms (median of 10) for 200 words and 2.6 s for 3,000 words. Building the pseudonymizer
+  takes 7.1 s with the model already downloaded, warm-up included. A cache hit takes 0.3 ms.
+  One loaded model uses about 1.5 GB of resident memory. The model over-predicts. In a Spanish
+  business text it labelled "La reunión con el cliente" as a person. That is accepted, since
+  recall matters more.
+
 ## Tests
 
 `test_chunking.py`
