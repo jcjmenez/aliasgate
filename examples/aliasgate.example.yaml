@@ -29,7 +29,9 @@ upstreams:
     # base_url: https://YOUR-RESOURCE.services.ai.azure.com/anthropic
   timeout_seconds: 600
   # Forwarded unchanged, as "<upstream> <METHOD> <path>" with upstream openai or anthropic,
-  # e.g. ["anthropic GET /v1/models"]. A method and path may be listed once. Nothing else is.
+  # e.g. ["anthropic GET /v1/models"]. A method and path may be listed once. Paths use letters,
+  # digits and -._~!$&'()*+,;=:@ only: no %-escapes, query, trailing slash or dot segments.
+  # Nothing else is forwarded.
   passthrough_paths: []
 
 detection:

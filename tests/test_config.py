@@ -1,6 +1,8 @@
+import posixpath
 import re
 import string
 from pathlib import Path
+from urllib.parse import unquote
 
 import httpx
 import pytest
@@ -8,7 +10,13 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
-from aliasgate.config import Settings, UpstreamSettings, load_settings, load_terms
+from aliasgate.config import (
+    Settings,
+    UpstreamSettings,
+    UpstreamsSettings,
+    load_settings,
+    load_terms,
+)
 from aliasgate.detectors.dictionary import Term
 from aliasgate.detectors.rules import DEFAULT_RULE_TYPES
 
@@ -392,6 +400,97 @@ def test_a_repeated_passthrough_path_error_does_not_repeat_the_path() -> None:
     with pytest.raises(ValidationError) as excinfo:
         load_settings(None, env={"ALIASGATE_UPSTREAMS__PASSTHROUGH_PATHS": entries})
     assert "secret-path" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/models",
+        "/v1/models/claude-example",
+        "/v1/files/file_01~x",
+        "/v1/a:b@c!$&'()*+,;=",
+        "/v1.2/models",
+        "/...",
+    ],
+)
+def test_passthrough_paths_made_of_plain_segments_are_accepted(path: str) -> None:
+    entry = f"anthropic GET {path}"
+    assert UpstreamsSettings(passthrough_paths=(entry,)).passthrough_paths == (entry,)
+
+
+@pytest.mark.parametrize(
+    ("path", "reason"),
+    [
+        ("/x7q/models?limit=2", "letters, digits"),
+        ("/x7q#models", "letters, digits"),
+        ("/x7q/a%3Fb", "letters, digits"),
+        ("/x7q/mod%65ls", "letters, digits"),
+        ("/x7q/%2e%2e/admin", "letters, digits"),
+        ("/x7q/mod\u00e8ls", "letters, digits"),
+        ("/x7q/a\\b", "letters, digits"),
+        ("/x7q/{id}", "letters, digits"),
+        ("/x7q/a\tb", "letters, digits"),
+        ("/x7q/../admin", "'.' or '..' segments"),
+        ("/x7q/./models", "'.' or '..' segments"),
+        ("/x7q//models", "empty segments"),
+        ("/x7q/", "empty segments"),
+        ("/", "empty segments"),
+        ("x7q/models", "a path starting with '/'"),
+    ],
+    ids=[
+        "query",
+        "fragment",
+        "escaped-question-mark",
+        "escaped-letter",
+        "escaped-dot-dot",
+        "non-ascii",
+        "backslash",
+        "braces",
+        "tab",
+        "dot-dot-segment",
+        "dot-segment",
+        "inner-empty-segment",
+        "trailing-slash",
+        "root",
+        "relative",
+    ],
+)
+def test_passthrough_paths_outside_plain_segments_are_rejected_with_the_reason(
+    path: str, reason: str
+) -> None:
+    with pytest.raises(ValidationError, match=re.escape(reason)) as excinfo:
+        UpstreamsSettings(passthrough_paths=(f"openai GET {path}",))
+    assert "x7q" not in str(excinfo.value)
+
+
+def test_every_upstream_can_be_named_in_a_passthrough_entry() -> None:
+    upstreams = [
+        name
+        for name, field in UpstreamsSettings.model_fields.items()
+        if field.annotation is UpstreamSettings
+    ]
+    assert upstreams == ["openai", "anthropic"]
+    for name in upstreams:
+        entry = f"{name} GET /v1/models"
+        assert UpstreamsSettings(passthrough_paths=(entry,)).passthrough_paths == (entry,)
+
+
+_PASSTHROUGH_CHARACTERS = string.ascii_letters + string.digits + "-._~!$&'()*+,;=:@/%?#\\ é"
+
+
+@given(st.text(alphabet=_PASSTHROUGH_CHARACTERS, max_size=20).map(lambda text: "/" + text))
+def test_property_an_accepted_passthrough_path_is_its_own_decoded_form_and_is_sent_as_written(
+    path: str,
+) -> None:
+    try:
+        UpstreamsSettings(passthrough_paths=(f"openai GET {path}",))
+    except ValidationError:
+        return
+    assert unquote(path) == path
+    assert posixpath.normpath(path) == path
+    url = httpx.URL(_ORIGIN + "/base" + path)
+    assert (url.query, url.fragment) == (b"", "")
+    assert url.raw_path.decode("ascii") == "/base" + path
 
 
 def test_relative_dictionary_paths_are_resolved_against_the_config_directory(

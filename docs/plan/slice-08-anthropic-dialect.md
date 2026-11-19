@@ -159,8 +159,12 @@ code to the message in parentheses, for example `"Unsupported content: image (un
 - Passthrough entries are `"<upstream> <METHOD> <path>"` with upstream `openai` or `anthropic`.
   A method and path may appear in only one entry, because the path alone must name the
   upstream. Both providers serve `GET /v1/models`, so only one of them can be passed through.
-  The path rule itself (`/\S*`) is unchanged. Applying the base-path segment rules to it is a
-  question for the maintainer (see the pull request).
+  The path, which used to be `/\S*`, must now be non-empty segments of letters, digits and
+  `-._~!$&'()*+,;=:@`, with no `.` or `..` segment and no trailing slash (decided with the
+  maintainer). Requests match on Starlette's decoded path and are forwarded with the entry's
+  path. With no `%`, `?` or `#` allowed, the decoded path that matches is exactly the path
+  that is sent. Before, `GET /v1/a?b` matched a request for `/v1/a%3Fb` and forwarded `b` as
+  the query string.
 - Manual check, 2026-11-18. The official Python SDK (`anthropic` 2.10.0) called the gateway,
   which forwarded to `claude-sonnet-5-5` on Claude in Microsoft Foundry, `base_url`
   `https://<resource>.services.ai.azure.com/anthropic`, with the key in `x-api-key`. A streamed

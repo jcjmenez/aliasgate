@@ -128,6 +128,15 @@ async def test_a_passthrough_path_goes_to_the_base_path_followed_by_the_path(
     assert str(route.calls.last.request.url) == f"{BASE_URL}/v1/models?limit=2"
 
 
+async def test_a_passthrough_request_matches_on_its_decoded_path_and_sends_the_entry_path(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    route = upstream.get(url=f"{BASE_URL}/v1/models").respond(json={"data": []})
+    response = await client.get("/v1/mod%65ls")
+    assert response.status_code == 200
+    assert route.calls.last.request.url.raw_path == b"/openai/v1/models"
+
+
 async def test_a_request_outside_the_base_path_is_never_made(
     client: httpx.AsyncClient, upstream: respx.MockRouter
 ) -> None:

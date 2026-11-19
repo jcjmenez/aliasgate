@@ -38,6 +38,10 @@ _BASE_DIR: Final = "base_dir"
 # "@", and percent-encoded octets. httpx sends such a segment exactly as written.
 _PATH_SEGMENT: Final = re.compile(r"(?:[A-Za-z0-9\-._~!$&'()*+,;=:@]|%[0-9A-Fa-f]{2})+")
 _DOT_SEGMENTS: Final = frozenset({".", ".."})
+# A passthrough path segment: the characters of _PATH_SEGMENT that never need escaping.
+_PLAIN_SEGMENT: Final = re.compile(r"[A-Za-z0-9\-._~!$&'()*+,;=:@]+")
+_PASSTHROUGH_UPSTREAMS: Final = frozenset({"openai", "anthropic"})  # fields of UpstreamsSettings
+_PASSTHROUGH_METHODS: Final = frozenset({"GET", "POST", "DELETE"})
 
 
 def _base_url(value: str) -> str:
@@ -65,13 +69,35 @@ def _base_url(value: str) -> str:
     return value.rstrip("/")
 
 
+def _passthrough_entry(value: str) -> str:
+    """`"<upstream> <METHOD> <path>"` with a path of non-empty plain segments. Requests match on
+    their decoded path and are forwarded with the entry's path, so a path that needs no escaping
+    is the only kind for which the two are the same text."""
+    parts = value.split(" ")
+    if (
+        len(parts) != 3
+        or parts[0] not in _PASSTHROUGH_UPSTREAMS
+        or parts[1] not in _PASSTHROUGH_METHODS
+        or not parts[2].startswith("/")
+    ):
+        raise ValueError(
+            "must be '<upstream> <METHOD> <path>' with upstream openai or anthropic, method GET,"
+            " POST or DELETE, and a path starting with '/'"
+        )
+    for segment in parts[2].split("/")[1:]:
+        if not segment:
+            raise ValueError("the path must not have empty segments")
+        if not _PLAIN_SEGMENT.fullmatch(segment):
+            raise ValueError("the path may only contain letters, digits and -._~!$&'()*+,;=:@")
+        if segment in _DOT_SEGMENTS:
+            raise ValueError("the path must not have '.' or '..' segments")
+    return value
+
+
 BaseUrl = Annotated[str, AfterValidator(_base_url)]
 EntityType = Annotated[str, AfterValidator(validate_entity_type)]
 PhoneRegion = Annotated[str, StringConstraints(pattern=r"^[A-Z]{2}$")]
-# "<upstream> <METHOD> <path>": the upstream is a field name of UpstreamsSettings.
-PassthroughPath = Annotated[
-    str, StringConstraints(pattern=r"^(openai|anthropic) (GET|POST|DELETE) /\S*$")
-]
+PassthroughPath = Annotated[str, AfterValidator(_passthrough_entry)]
 
 
 class _Section(BaseModel):

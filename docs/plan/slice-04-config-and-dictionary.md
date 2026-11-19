@@ -46,7 +46,7 @@ upstreams:
   anthropic:
     base_url: https://api.anthropic.com
   timeout_seconds: 600
-  passthrough_paths: []     # e.g. ["GET /v1/models"]
+  passthrough_paths: []     # e.g. ["openai GET /v1/models"] (format changed in slice 08)
 
 detection:
   rules:
@@ -86,7 +86,9 @@ def load_settings(path: Path | None, env: Mapping[str, str] = os.environ) -> Set
 - Validation: base URLs must be `http` or `https` with a host and may end in a base path (changed
   after merge, see "Base paths in `base_url`" below); entity types pass
   `validate_entity_type`; `phone_regions` are two upper-case letters; `threshold` in `[0, 1]`;
-  `min_propagation_length >= 1`; `passthrough_paths` entries match `^(GET|POST|DELETE) /\S*$`.
+  `min_propagation_length >= 1`; `passthrough_paths` entries match `^(GET|POST|DELETE) /\S*$`
+  (changed in slice 08: entries are `"<upstream> <METHOD> <path>"` and the path is made of
+  plain segments, see architecture §6.2).
 - Missing file → `FileNotFoundError` with the path. Invalid content → `pydantic.ValidationError`
   (let it propagate; the CLI formats it in slice 12).
 - Dictionary file paths are resolved relative to the configuration file.

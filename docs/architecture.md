@@ -302,7 +302,9 @@ returned unchanged. Its error answers are restored like those of any other route
 Any other path returns 404 unless it is listed in `passthrough_paths` as
 `"<upstream> <METHOD> <path>"`, for example `"anthropic GET /v1/models"`, which forwards it
 unchanged to that upstream. A method and path may appear in only one entry, so that the path
-alone names the upstream. Unknown endpoints are never forwarded by default, because an endpoint
+alone names the upstream. The path is made of non-empty segments of letters, digits and
+`-._~!$&'()*+,;=:@`, with no `.` or `..` segment: requests match on their decoded path and are
+forwarded with the entry's path, and only a path that needs no escaping is the same text in both. Unknown endpoints are never forwarded by default, because an endpoint
 the gateway does not understand cannot be pseudonymised.
 
 Errors the gateway answers itself use the error shape of the route's dialect; a passthrough
