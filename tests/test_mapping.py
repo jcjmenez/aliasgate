@@ -1,3 +1,6 @@
+import copy
+import pickle
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -185,3 +188,20 @@ def test_placeholders_are_unique_and_resolve_to_their_canonical_surface(
     for entity_type in {entity.entity_type for entity in entities}:
         numbers = [_parse(e.placeholder)[1] for e in entities if e.entity_type == entity_type]
         assert numbers == list(range(1, len(numbers) + 1))
+
+
+def test_a_mapping_cannot_be_pickled_copied_or_have_its_state_read() -> None:
+    mapping = Mapping()
+    mapping.assign("PERSON", "Juan Pérez")
+    for operation in (pickle.dumps, copy.copy, copy.deepcopy, lambda m: m.__getstate__()):
+        with pytest.raises(TypeError, match="never serialised") as excinfo:
+            operation(mapping)
+        assert "Juan" not in str(excinfo.value)
+
+
+def test_an_entity_cannot_be_pickled_copied_or_have_its_state_read() -> None:
+    entity = Mapping().assign("PERSON", "Juan Pérez")
+    for operation in (pickle.dumps, copy.copy, copy.deepcopy, lambda e: e.__getstate__()):
+        with pytest.raises(TypeError, match="never serialised") as excinfo:
+            operation(entity)
+        assert "Juan" not in str(excinfo.value)

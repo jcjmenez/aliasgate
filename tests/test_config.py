@@ -63,8 +63,10 @@ DEFAULTS = {
         "unsupported_content": "block",
         "strip_user_identifiers": True,
         "tool_definitions": True,
+        "leak_audit": True,
     },
     "logging": {"level": "INFO"},
+    "metrics": {"enabled": True},
 }
 
 
@@ -146,6 +148,12 @@ def test_ml_revision_may_be_null_for_a_local_model(tmp_path: Path) -> None:
     assert (ml.model, ml.revision) == ("/models/gliner", None)
 
 
+def test_metrics_and_the_leak_audit_can_be_turned_off(tmp_path: Path) -> None:
+    path = _config(tmp_path, "metrics:\n  enabled: false\npolicy:\n  leak_audit: false\n")
+    settings = load_settings(path, env={})
+    assert (settings.metrics.enabled, settings.policy.leak_audit) == (False, False)
+
+
 def test_unrelated_environment_variables_are_ignored() -> None:
     assert load_settings(None, env={"HOME": "/home/example", "PORT": "1"}).model_dump() == DEFAULTS
 
@@ -163,6 +171,7 @@ def test_unrelated_environment_variables_are_ignored() -> None:
         "detection:\n  allowlist: []\n",
         "policy:\n  unsuported_content: pass\n",
         "logging:\n  lvl: DEBUG\n",
+        "metrics:\n  enable: true\n",
     ],
 )
 def test_unknown_key_in_any_section_is_rejected(tmp_path: Path, content: str) -> None:

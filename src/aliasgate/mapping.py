@@ -2,6 +2,7 @@
 
 import unicodedata
 from dataclasses import dataclass, field
+from typing import Final
 
 from aliasgate.placeholders import format_placeholder
 from aliasgate.types import validate_entity_type
@@ -12,20 +13,33 @@ def normalize_key(surface: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", surface).casefold().split())
 
 
+_NOT_SERIALISABLE: Final = "the mapping and its entities are never serialised or copied"
+
+
 @dataclass(frozen=True, slots=True)
 class Entity:
-    """One entity of a mapping; its repr shows only the type and the placeholder."""
+    """One entity of a mapping; its repr shows only the type and the placeholder.
+
+    It cannot be pickled or copied, and its state cannot be read, because it holds a surface.
+    """
 
     key: str = field(repr=False)
     entity_type: str
     surface: str = field(repr=False)  # canonical surface: the first one seen
     placeholder: str
 
+    def __getstate__(self) -> object:
+        raise TypeError(_NOT_SERIALISABLE)
+
+    def __reduce__(self) -> str | tuple[object, ...]:
+        raise TypeError(_NOT_SERIALISABLE)
+
 
 class Mapping:
     """Placeholder-to-surface table of one request; numbers start at 1 per entity type.
 
-    Not thread-safe: use one instance per request. Its repr reveals only the entity count.
+    Not thread-safe: use one instance per request. Its repr reveals only the entity count, and
+    it cannot be pickled or copied.
     """
 
     __slots__ = ("_by_key", "_by_placeholder", "_counters")
@@ -81,3 +95,9 @@ class Mapping:
 
     def __repr__(self) -> str:
         return f"Mapping(entities={len(self._by_key)})"
+
+    def __getstate__(self) -> object:
+        raise TypeError(_NOT_SERIALISABLE)
+
+    def __reduce__(self) -> str | tuple[object, ...]:
+        raise TypeError(_NOT_SERIALISABLE)

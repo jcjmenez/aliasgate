@@ -216,17 +216,28 @@ class DetectionSettings(_Section):
 
 
 class PolicySettings(_Section):
-    """What happens to content the gateway cannot pseudonymise or should not forward."""
+    """What happens to content the gateway cannot pseudonymise or should not forward.
+
+    With `leak_audit`, a request whose outbound body still holds a detected value is rejected
+    instead of forwarded (architecture §8).
+    """
 
     unsupported_content: Literal["block", "pass"] = "block"
     strip_user_identifiers: bool = True
     tool_definitions: bool = True
+    leak_audit: bool = True
 
 
 class LoggingSettings(_Section):
     """Log level. Logs never contain text (architecture §7.1)."""
 
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+
+
+class MetricsSettings(_Section):
+    """Prometheus metrics at `GET /metrics`, on the gateway's own port. Labels never hold text."""
+
+    enabled: bool = True
 
 
 class Settings(_Section):
@@ -237,6 +248,7 @@ class Settings(_Section):
     detection: DetectionSettings = DetectionSettings()
     policy: PolicySettings = PolicySettings()
     logging: LoggingSettings = LoggingSettings()
+    metrics: MetricsSettings = MetricsSettings()
 
 
 # The fields of Settings on a BaseSettings class, which is what pydantic-settings needs to parse

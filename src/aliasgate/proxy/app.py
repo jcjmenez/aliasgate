@@ -1,7 +1,8 @@
 """The gateway's ASGI application: routing, the dialect request flow and logging (architecture §7).
 
-Fail closed: every failure before forwarding produces an error response and no upstream call.
-Logs carry ids, counts, entity types, durations and status codes, never text.
+Fail closed: every failure before forwarding produces an error response and no upstream call,
+and the leak audit checks the outbound body before it is sent. Logs and metrics carry ids,
+counts, entity types, durations and status codes, never text.
 """
 
 import json
@@ -14,6 +15,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any, Final
 
 import anyio
@@ -25,7 +27,9 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
+from aliasgate.audit import AuditResult, audit_outbound
 from aliasgate.config import PolicySettings, Settings
+from aliasgate.detectors.cache import CachedDetector
 from aliasgate.dialects.anthropic_messages import AnthropicMessagesDialect
 from aliasgate.dialects.base import (
     Dialect,
@@ -37,21 +41,24 @@ from aliasgate.dialects.base import (
     slots_for_json_strings,
 )
 from aliasgate.dialects.openai_chat import OpenAIChatDialect
-from aliasgate.dialects.sse import SSEParser
-from aliasgate.engine import DetectionError, Pseudonymizer, count_unresolved
+from aliasgate.dialects.sse import SSEEvent, SSEParser
+from aliasgate.engine import BatchStats, DetectionError, Pseudonymizer, count_unresolved
 from aliasgate.factory import build_pseudonymizer
 from aliasgate.mapping import Mapping
+from aliasgate.metrics import CONTENT_TYPE, GatewayMetrics, Outcome, Phase
 from aliasgate.proxy import errors
 from aliasgate.proxy.errors import GatewayError
 from aliasgate.proxy.headers import filter_request_headers, filter_response_headers
 
 REQUEST_ID_HEADER: Final = "x-aliasgate-request-id"
+ENTITIES_HEADER: Final = "x-aliasgate-entities"
 
 _logger: Final = logging.getLogger("aliasgate.proxy")
 # Every method reaches the gateway's own dispatch; Starlette answers any other with 405, which
 # is mapped to the same 404 as an unknown path.
 _METHODS: Final = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 _HEALTH: Final = ("GET", "/healthz")
+_METRICS: Final = ("GET", "/metrics")
 _CHAT_COMPLETIONS: Final = "/v1/chat/completions"
 _MESSAGES: Final = "/v1/messages"
 _COUNT_TOKENS: Final = "/v1/messages/count_tokens"
@@ -102,14 +109,22 @@ def configure_logging(level: str) -> None:
 
 @dataclass(slots=True)
 class _RequestLog:
-    """What the logs may say about one request: its id, route, counts and entity types."""
+    """What the logs and metrics may say about one request: its id, route, outcome, counts,
+    entity types and timings. Written once, when the request ends."""
 
+    metrics: GatewayMetrics | None = None
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     route: str = _UNKNOWN_ROUTE
     started: float = field(default_factory=time.perf_counter)
     slots: int = 0
     entities: dict[str, int] = field(default_factory=dict)
+    entity_count: int = 0
     unresolved_placeholders: int = 0
+    outcome: Outcome = "ok"  # an error answered by the upstream becomes upstream_error at emit
+    code: str | None = None  # the code of an error response the gateway produced
+    stats: BatchStats | None = None
+    leaked_types: tuple[str, ...] = ()
+    overhead: dict[Phase, float] = field(default_factory=dict)
     deferred: bool = False  # a streamed response writes the line itself, when the stream ends
 
     def emit(self, status: int) -> None:
@@ -123,6 +138,34 @@ class _RequestLog:
             "unresolved_placeholders": self.unresolved_placeholders,
         }
         _logger.info("request", extra={"fields": fields})
+        if self.metrics is not None:
+            self._record(self.metrics, status)
+
+    def _record(self, metrics: GatewayMetrics, status: int) -> None:
+        outcome: Outcome = (
+            "upstream_error" if self.outcome == "ok" and status >= 400 else self.outcome
+        )
+        metrics.request(self.route, status, outcome)
+        if self.code is not None:
+            metrics.rejection(self.route, self.code)
+        if self.stats is not None:
+            metrics.batch(self.stats)
+        for phase, seconds in self.overhead.items():
+            metrics.overhead(self.route, phase, seconds)
+        if self.unresolved_placeholders:
+            metrics.unresolved(self.route, self.unresolved_placeholders)
+        if self.leaked_types:
+            metrics.leak(self.route, self.leaked_types)
+
+    def leak(self, result: AuditResult) -> None:
+        """Log a leak audit failure by count and entity types only."""
+        self.leaked_types = result.leaked_types
+        fields = {
+            "request_id": self.request_id,
+            "leaked_entities": result.leaked_entities,
+            "leaked_types": list(result.leaked_types),
+        }
+        _logger.error("leak audit failed", extra={"fields": fields})
 
     def failure(self, stage: str, exc: BaseException) -> None:
         """Log a failure by exception class name only: its message and cause may hold text."""
@@ -230,6 +273,7 @@ class _RelayResponse(StreamingResponse):
         self._upstream = upstream
         self._transformer = transformer
         self._log = log
+        self._restoring = 0.0
         self._events = self._relay()
         log.deferred = True
         super().__init__(self._events, status_code=upstream.status_code, media_type=_EVENT_STREAM)
@@ -246,6 +290,7 @@ class _RelayResponse(StreamingResponse):
         except ClientDisconnect:
             pass  # how servers implementing ASGI 2.4 report a client that went away
         except Exception as exc:
+            self._log.outcome = "gateway_error"
             self._log.failure("stream", exc)
         finally:
             # Shielded: after a disconnect the task is being cancelled, and the provider must
@@ -254,21 +299,33 @@ class _RelayResponse(StreamingResponse):
                 await self._events.aclose()
                 await self._upstream.aclose()
             self._log.unresolved_placeholders = self._transformer.unresolved
+            self._log.overhead["restore"] = self._restoring
             self._log.emit(self.status_code)
+
+    def _transform(self, event: SSEEvent | None) -> list[SSEEvent]:
+        """The transformer's output for one event, or for the end of the stream (None), timed."""
+        started = time.perf_counter()
+        try:
+            return self._transformer.end() if event is None else self._transformer.feed(event)
+        finally:
+            self._restoring += time.perf_counter() - started
 
     async def _relay(self) -> AsyncGenerator[bytes, None]:
         parser = SSEParser()
         try:
             async for chunk in self._upstream.aiter_bytes():
                 for event in parser.feed(chunk):
-                    for output in self._transformer.feed(event):
+                    for output in self._transform(event):
                         yield output.encode()
             for event in parser.end():
-                for output in self._transformer.feed(event):
+                for output in self._transform(event):
                     yield output.encode()
-            for output in self._transformer.end():
+            for output in self._transform(None):
                 yield output.encode()
         except Exception as exc:
+            self._log.outcome = (
+                "upstream_error" if isinstance(exc, httpx.HTTPError) else "gateway_error"
+            )
             self._log.failure("stream", exc)
 
 
@@ -280,10 +337,12 @@ class _Gateway:
         settings: Settings,
         pseudonymizer: Pseudonymizer,
         http_client: httpx.AsyncClient | None,
+        metrics: GatewayMetrics | None,
     ) -> None:
         self.client = http_client
         self._settings = settings
         self._pseudonymizer = pseudonymizer
+        self._metrics = metrics
         self._policy = _policy(settings.policy)
         self._openai = OpenAIChatDialect()
         self._anthropic = AnthropicMessagesDialect()
@@ -307,7 +366,7 @@ class _Gateway:
 
     async def dispatch(self, request: Request) -> Response:
         """Answer one request. Never raises; every response carries the request id."""
-        log = _RequestLog()
+        log = _RequestLog(self._metrics)
         key = (request.method, request.scope["path"])
         anthropic_client = any(name in request.headers for name in _ANTHROPIC_HEADERS)
         dialect: Dialect = self._anthropic if anthropic_client else self._openai
@@ -315,6 +374,9 @@ class _Gateway:
             if key == _HEALTH:
                 log.route = " ".join(key)
                 response: Response = JSONResponse({"status": "ok"})
+            elif key == _METRICS and self._metrics is not None:
+                log.route = " ".join(key)
+                response = Response(self._metrics.render(), media_type=CONTENT_TYPE)
             elif (route := self._routes.get(key)) is not None:
                 log.route = " ".join(key)
                 dialect = route.dialect
@@ -326,14 +388,21 @@ class _Gateway:
             else:
                 raise errors.unknown_endpoint()
         except GatewayError as error:
-            response = errors.error_response(dialect, error)
+            response = self._error(dialect, error, log)
         except Exception as exc:
             log.failure("internal", exc)
-            response = errors.error_response(dialect, errors.internal_error())
+            response = self._error(dialect, errors.internal_error(), log)
         response.headers[REQUEST_ID_HEADER] = log.request_id
+        response.headers[ENTITIES_HEADER] = str(log.entity_count)
         if not log.deferred:
             log.emit(response.status_code)
         return response
+
+    @staticmethod
+    def _error(dialect: Dialect, error: GatewayError, log: _RequestLog) -> Response:
+        log.outcome = error.outcome
+        log.code = error.code
+        return errors.error_response(dialect, error)
 
     async def not_routed(self, request: Request, exc: Exception) -> Response:
         """Starlette's 404 and 405 go through the same dispatch, which answers 404."""
@@ -344,6 +413,7 @@ class _Gateway:
     ) -> Response:
         body = _parse_object(await self._read_body(request))
         streaming = not route.request_only and bool(body.get("stream"))
+        started = time.perf_counter()
         try:
             prepared = route.dialect.prepare_request(body, self._policy)
         except UnsupportedContentError as exc:
@@ -359,6 +429,11 @@ class _Gateway:
             log.failure("pseudonymize", exc)
             raise errors.pseudonymization_failed() from None
         log.entities = dict(Counter(entity.entity_type for entity in batch.mapping.entities()))
+        log.entity_count = len(batch.mapping)
+        log.stats = batch.stats
+        if self._settings.policy.leak_audit:
+            await self._audit(body, batch.mapping, log)
+        log.overhead["pseudonymize"] = time.perf_counter() - started
         url = route.base_url + route.path
         upstream = await self._forward(
             request, "POST", url, _encode(body), log, json_content=True, stream=streaming
@@ -383,6 +458,23 @@ class _Gateway:
         finally:
             await upstream.aclose()
         return self._restored(upstream, route.dialect, batch.mapping, log)
+
+    async def _audit(self, body: dict[str, Any], mapping: Mapping, log: _RequestLog) -> None:
+        """Reject the request if a detected value is still anywhere in the outbound body."""
+        audit = partial(
+            audit_outbound,
+            body,
+            mapping,
+            min_length=self._settings.detection.min_propagation_length,
+        )
+        try:
+            result = await anyio.to_thread.run_sync(audit)
+        except Exception as exc:
+            log.failure("audit", exc)
+            raise errors.internal_error() from None
+        if result.leaked_entities:
+            log.leak(result)
+            raise errors.leak_audit_failed()
 
     async def _passthrough_flow(
         self, request: Request, route: _PassthroughRoute, method: str, log: _RequestLog
@@ -453,6 +545,7 @@ class _Gateway:
         self, upstream: httpx.Response, dialect: Dialect, mapping: Mapping, log: _RequestLog
     ) -> Response:
         """The upstream response with placeholders restored; non-JSON bodies are unchanged."""
+        started = time.perf_counter()
         content = upstream.content
         parsed = _loads(content) if _is_json(upstream.headers.get("content-type")) else _NOT_JSON
         if parsed is not _NOT_JSON:
@@ -468,6 +561,7 @@ class _Gateway:
             except Exception as exc:
                 log.failure("restore", exc)
                 raise errors.restoration_failed() from None
+        log.overhead["restore"] = time.perf_counter() - started
         return _upstream_response(upstream, content)
 
 
@@ -480,7 +574,11 @@ def create_app(
     """Build the ASGI app. The optional arguments exist for tests."""
     if pseudonymizer is None:
         pseudonymizer = build_pseudonymizer(settings)
-    gateway = _Gateway(settings, pseudonymizer, http_client)
+    metrics = None
+    if settings.metrics.enabled:
+        caches = [d for d in pseudonymizer.detectors if isinstance(d, CachedDetector)]
+        metrics = GatewayMetrics([cache.stats for cache in caches])
+    gateway = _Gateway(settings, pseudonymizer, http_client, metrics)
 
     @asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:

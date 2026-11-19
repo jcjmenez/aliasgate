@@ -2,7 +2,9 @@
 
 import json
 import re
+import time
 from bisect import bisect_left
+from collections import Counter, abc
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
@@ -17,15 +19,32 @@ from aliasgate.types import LITERAL, Detector, Span
 # in the input stay two entities and both restore byte for byte (architecture §4.4).
 _LITERAL_KEY_PREFIX = "\x00literal:"
 
-type _Occurrence = tuple[int, int, Entity]
+_PROPAGATION_SOURCE = "propagation"
+
+# (start, end, entity, source): a replaced range, its entity, and the detector that found it.
+type _Occurrence = tuple[int, int, Entity, str]
+
+
+@dataclass(frozen=True, slots=True)
+class BatchStats:
+    """Counts and timings of one batch, for metrics: no text, no surface.
+
+    `entities_by_type_and_source` counts replaced occurrences by the entity's type and the
+    detector name that found them ("propagation" for propagated ones). `detector_seconds` is
+    the time each detector spent on the batch, by detector name.
+    """
+
+    entities_by_type_and_source: abc.Mapping[tuple[str, str], int]
+    detector_seconds: abc.Mapping[str, float]
 
 
 @dataclass(frozen=True, slots=True)
 class PseudonymizedBatch:
-    """Pseudonymised texts in input order, and the mapping that restores them."""
+    """Pseudonymised texts in input order, the mapping that restores them, and their stats."""
 
     texts: tuple[str, ...]
     mapping: Mapping
+    stats: BatchStats
 
 
 class DetectionError(Exception):
@@ -75,32 +94,50 @@ class Pseudonymizer:
         self._propagate = propagate
         self._min_propagation_length = min_propagation_length
 
+    @property
+    def detectors(self) -> tuple[Detector, ...]:
+        """The detectors in the order they run; the literal detector comes first."""
+        return self._detectors
+
     def pseudonymize(self, texts: Sequence[str]) -> PseudonymizedBatch:
         """Pseudonymise all texts of one request as a batch (architecture §4.3)."""
         batch = tuple(texts)
-        resolved = [self._detect(text) for text in batch]
+        seconds = dict.fromkeys((detector.name for detector in self._detectors), 0.0)
+        resolved = [self._detect(text, seconds) for text in batch]
         mapping = Mapping()
         occurrences: list[list[_Occurrence]] = [
             [
-                (span.start, span.end, _assign(mapping, span, text[span.start : span.end]))
+                (
+                    span.start,
+                    span.end,
+                    _assign(mapping, span, text[span.start : span.end]),
+                    span.source,
+                )
                 for span in spans
             ]
             for text, spans in zip(batch, resolved, strict=True)
         ]
         if self._propagate:
             self._propagate_entities(mapping, batch, occurrences)
+        counts = Counter(
+            (entity.entity_type, source) for found in occurrences for _, _, entity, source in found
+        )
         return PseudonymizedBatch(
             tuple(_replace(text, found) for text, found in zip(batch, occurrences, strict=True)),
             mapping,
+            BatchStats(dict(counts), seconds),
         )
 
-    def _detect(self, text: str) -> list[Span]:
+    def _detect(self, text: str, seconds: dict[str, float]) -> list[Span]:
         spans: list[Span] = []
         for detector in self._detectors:
+            started = time.perf_counter()
             try:
                 found = list(detector.detect(text))
             except Exception as exc:
                 raise DetectionError(detector.name) from exc
+            finally:
+                seconds[detector.name] += time.perf_counter() - started
             if not all(isinstance(span, Span) and span.end <= len(text) for span in found):
                 raise DetectionError(detector.name, "returned a span outside the text")
             spans.extend(found)
@@ -123,13 +160,13 @@ class Pseudonymizer:
             ),
             key=lambda entity: -len(entity.surface),
         )
-        occupied = [_Occupied((start, end) for start, end, _ in found) for found in occurrences]
+        occupied = [_Occupied((start, end) for start, end, _, _ in found) for found in occurrences]
         for entity in entities:
             pattern = build_term_pattern(entity.surface)
             for text, taken, found in zip(texts, occupied, occurrences, strict=True):
                 for match in pattern.finditer(text):
                     if taken.claim(match.start(), match.end()):
-                        found.append((match.start(), match.end(), entity))
+                        found.append((match.start(), match.end(), entity, _PROPAGATION_SOURCE))
 
 
 def _assign(mapping: Mapping, span: Span, surface: str) -> Entity:
@@ -141,7 +178,7 @@ def _assign(mapping: Mapping, span: Span, surface: str) -> Entity:
 def _replace(text: str, occurrences: list[_Occurrence]) -> str:
     pieces: list[str] = []
     position = 0
-    for start, end, entity in sorted(occurrences, key=lambda occurrence: occurrence[0]):
+    for start, end, entity, _ in sorted(occurrences, key=lambda occurrence: occurrence[0]):
         pieces.append(text[position:start])
         pieces.append(entity.placeholder)
         position = end

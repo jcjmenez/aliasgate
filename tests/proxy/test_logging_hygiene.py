@@ -8,6 +8,7 @@ from collections.abc import Iterator
 import httpx
 import pytest
 import respx
+from hygiene import assert_clean, capture_everything, gateway_records
 from payloads import CHAT, ClientFactory, chat_request, chat_response
 
 from aliasgate.dialects.openai_chat import OpenAIChatDialect
@@ -15,18 +16,7 @@ from aliasgate.engine import Pseudonymizer
 from aliasgate.proxy.app import JsonFormatter, configure_logging
 from fakes import FailingDetector
 
-VALUES = (
-    "Juan Pérez",
-    "Pérez",
-    "P\\u00e9rez",
-    "juan.perez@example.com",
-    "juan.perez",
-    "ACME Corporation",
-    "ACME",
-)
-GATEWAY = "http://gateway.test"
 TEXT = "Write to Juan Pérez (juan.perez@example.com) at ACME Corporation."
-LOGGERS = (None, "aliasgate", "httpx", "httpcore", "uvicorn", "uvicorn.error", "starlette")
 INFO_KEYS = {
     "request_id",
     "route",
@@ -41,33 +31,7 @@ INFO_KEYS = {
 @pytest.fixture
 def capture(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
     """Capture every record of every logger at DEBUG."""
-    for name in LOGGERS:
-        caplog.set_level(logging.DEBUG, logger=name)
-    return caplog
-
-
-def _gateway_records(capture: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
-    """Every record except the test client's own httpx request lines, which name the URL the
-    test called and are not produced by the gateway."""
-    return [
-        record
-        for record in capture.records
-        if not (
-            record.name == "httpx"
-            and isinstance(record.args, tuple)
-            and str(record.args[1]).startswith(GATEWAY)
-        )
-    ]
-
-
-def _assert_clean(records: list[logging.LogRecord]) -> None:
-    assert records, "nothing was logged"
-    formatter = JsonFormatter()
-    for record in records:
-        rendered = (repr(vars(record)), record.getMessage(), formatter.format(record))
-        for text in rendered:
-            for value in VALUES:
-                assert value not in text, f"{record.name} logged a synthetic value"
+    return capture_everything(caplog)
 
 
 def _request_lines(records: list[logging.LogRecord]) -> list[dict[str, object]]:
@@ -87,8 +51,8 @@ async def test_happy_path_logs_one_info_line_with_counts_only(
     response = await client.post(CHAT, json=chat_request(TEXT))
     assert response.status_code == 200
 
-    records = _gateway_records(capture)
-    _assert_clean(records)
+    records = gateway_records(capture)
+    assert_clean(records)
     (line,) = _request_lines(records)
     assert set(line) == INFO_KEYS
     assert line["request_id"] == response.headers["x-aliasgate-request-id"]
@@ -110,8 +74,8 @@ async def test_failing_detector_path_logs_the_class_and_detector_name_only(
         response = await client.post(CHAT, json=chat_request(TEXT))
     assert response.status_code == 500
 
-    records = _gateway_records(capture)
-    _assert_clean(records)
+    records = gateway_records(capture)
+    assert_clean(records)
     for record in records:
         assert not record.exc_info
         assert record.stack_info is None
@@ -154,8 +118,8 @@ async def test_rejected_and_failed_requests_log_no_text(
     restored_failure = await client.post(CHAT, json=chat_request(TEXT))
     assert restored_failure.status_code == 502
 
-    records = _gateway_records(capture)
-    _assert_clean(records)
+    records = gateway_records(capture)
+    assert_clean(records)
     statuses = [line["status"] for line in _request_lines(records)]
     assert statuses == [429, 422, 400, 400, 404, 502]
     assert _request_lines(records)[4]["route"] == "unknown"

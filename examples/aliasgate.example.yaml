@@ -68,6 +68,15 @@ policy:
   unsupported_content: block # block | pass (pass forwards images and files unprotected)
   strip_user_identifiers: true
   tool_definitions: true     # pseudonymise "description" values in tool definitions
+  # Before forwarding, search every string value of the outbound body for the detected values
+  # and reject the request (500 leak_audit_failed) if one is still there, for example in a
+  # field the gateway forwards unchanged (OpenAI metadata, tool names, enum values).
+  leak_audit: true
 
 logging:
   level: INFO                # logs never contain request or response text
+
+metrics:
+  # Prometheus metrics at GET /metrics, on the gateway's own port. Labels never hold text,
+  # but do not expose the endpoint outside your network.
+  enabled: true

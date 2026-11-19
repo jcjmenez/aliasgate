@@ -21,7 +21,7 @@ Three layers, with dependencies pointing only downwards:
 
 | Layer | Package | Knows about | Must not know about |
 |---|---|---|---|
-| Core | `aliasgate.types`, `placeholders`, `mapping`, `resolve`, `engine`, `stream`, `detectors.*` | Strings and spans | JSON payloads, HTTP |
+| Core | `aliasgate.types`, `placeholders`, `mapping`, `resolve`, `engine`, `stream`, `audit`, `detectors.*` | Strings and spans (`audit` walks any JSON value, without knowing its shape) | Provider JSON shapes, HTTP |
 | Dialects | `aliasgate.dialects.*` | The JSON shape of one provider API | HTTP, sockets |
 | Proxy | `aliasgate.proxy.*`, `config`, `cli`, `metrics` | HTTP, configuration, wiring | Detection internals |
 
@@ -101,12 +101,24 @@ class Pseudonymizer:
     def __init__(self, detectors: Sequence[Detector], *, allow_list: Iterable[str] = (),
                  propagate: bool = True, min_propagation_length: int = 3) -> None: ...
     def pseudonymize(self, texts: Sequence[str]) -> PseudonymizedBatch: ...
+    @property
+    def detectors(self) -> tuple[Detector, ...]: ...   # in run order, the literal one first
 
 @dataclass(frozen=True, slots=True)
 class PseudonymizedBatch:
     texts: tuple[str, ...]
     mapping: Mapping
+    stats: BatchStats
+
+@dataclass(frozen=True, slots=True)
+class BatchStats:                       # for metrics: counts and timings, never text
+    entities_by_type_and_source: Mapping[tuple[str, str], int]  # replaced occurrences
+    detector_seconds: Mapping[str, float]                        # by detector name
 ```
+
+`entities_by_type_and_source` counts every replaced occurrence by its entity's type and the
+detector that found it, `"propagation"` for propagated ones. The mapping and its entities
+cannot be pickled or copied, and their state cannot be read (security invariant 3).
 
 Processing the request as one batch is what makes consistency and determinism possible: the
 numbering depends only on the content and order of the texts.
@@ -332,7 +344,8 @@ Foundry serves the Messages API under `/anthropic/v1/`, so its `base_url` is
   provider headers are forwarded as received. Hop-by-hop headers, `host` and `content-length`
   are not forwarded. `accept-encoding` is not forwarded; httpx negotiates its own.
 - Request flow: parse JSON → `prepare_request` → engine (in a worker thread) → write slots →
-  leak audit → forward → restore (whole body, or stream transformer) → respond.
+  leak audit (in a worker thread, §8) → forward → restore (whole body, or stream transformer)
+  → respond.
 - **Upstream URL.** A request for path `P` is forwarded to `{base_url}{P}`, followed by the
   client's query string. `base_url` may end in a base path, for providers that serve the API
   below a prefix (Azure OpenAI serves it only under `/openai/v1/`). Configuration validation
@@ -364,12 +377,42 @@ which would print every path and query string, and keeps the `httpx` and `httpco
 WARNING or above, because they log upstream URLs (with the client's query string) and headers.
 Exceptions are logged by class name only, and the JSON formatter never renders a traceback.
 
-## 8. Safety checks (`audit.py`)
+## 8. Safety checks (`audit.py`) and metrics (`metrics.py`)
 
 | Check | When | On failure |
 |---|---|---|
-| **Outbound leak audit**: for every entity in the mapping whose key length is ≥ `min_propagation_length`, the propagation pattern of §4.3 step 3 (word-bounded, case-insensitive) finds no match in any processed slot after replacement | before forwarding | reject with 500, metric `aliasgate_leak_audit_failures_total` |
+| **Outbound leak audit**: for every non-`LITERAL` entity in the mapping whose key length is ≥ `min_propagation_length`, no **string value anywhere in the outbound body** (not only the slots; keys are not checked) contains it, either by the propagation pattern of §4.3 step 3 (word-bounded, case-insensitive) or by its key in the NFKC-normalised, case-folded string | after the slots are written, before forwarding | reject with 500 `leak_audit_failed`, nothing is forwarded, metric `aliasgate_leak_audit_failures_total` |
 | **Unresolved placeholders**: tolerant matches in the response not present in the mapping | after restoring | pass through unchanged, metric `aliasgate_unresolved_placeholders_total` |
+
+The audit searches both ways because the two notions of "the same value" differ. The term
+pattern uses simple case folding, so it misses variants that share the entity's key: `STRASSE`
+for `Straße`, a decomposed `é`, full-width letters. Propagation misses them too, so the audit
+rejects such a request instead of forwarding it. The pattern also matches some values whose
+keys differ, such as `İvan` for `Ivan`, and those are reported as well. A combined alternation
+of all entities decides in one pass per string whether anything leaked; each entity is
+searched on its own only to count a failure. The audit is on by default (`policy.leak_audit`).
+
+Metrics live in a registry per application and are served at `GET /metrics` when
+`metrics.enabled` (the default), on the gateway's port. Every label value is chosen by the
+gateway: routes (`unknown` for an unrouted request), status classes, outcomes, error codes,
+detector names and entity types from the configuration. None is taken from a request.
+
+| Metric | Type | Labels |
+|---|---|---|
+| `aliasgate_requests_total` | counter | `route`, `status_class`, `outcome` |
+| `aliasgate_entities_total` | counter | `entity_type`, `source` |
+| `aliasgate_unresolved_placeholders_total` | counter | `route` |
+| `aliasgate_leak_audit_failures_total` | counter | `route`, `entity_type` |
+| `aliasgate_rejections_total` | counter | `route`, `code` |
+| `aliasgate_detection_seconds` | histogram | `detector` |
+| `aliasgate_request_overhead_seconds` | histogram | `route`, `phase` (`pseudonymize`, `restore`) |
+| `aliasgate_detection_cache_total` | counter | `result` (`hit`, `miss`); only with a cached detector |
+
+`outcome` is `ok`, `rejected` (the gateway refused the request: invalid input, policy, the
+leak audit), `upstream_error` (the provider answered an error, failed or timed out) or
+`gateway_error` (the gateway failed). `rejections_total` counts every error response the
+gateway produced itself, by its error code. Every response carries `x-aliasgate-entities`,
+the number of entities in the request's mapping (0 when nothing was pseudonymised).
 
 ## 9. Configuration
 

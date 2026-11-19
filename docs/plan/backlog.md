@@ -130,3 +130,14 @@ Models sometimes refuse a task because they see placeholders and take them for a
 template (seen in the slice 08 manual check). An opt-in system note, added by the dialect, would
 say that bracketed placeholders stand for real values the model must use as given. Measure its
 effect with the utility evaluation (section 5) before turning it on by default.
+
+## 16. Fold-aware propagation
+
+Found in slice 10. Propagation finds other occurrences with a case-insensitive pattern, while
+keys use NFKC and full case folding. Variants that share an entity's key but not its pattern
+are not replaced: `STRASSE` for `Straße`, a decomposed `é`, full-width letters. The leak audit
+catches them, so such a request is rejected rather than leaked. Replacing them instead needs
+matching on normalised, case-folded text and mapping the offsets back to the original. NFKC
+composes across characters, so this cannot be done one character at a time. The audit also
+cannot see a value that is JSON-escaped inside a string (`P\u00e9rez` in a tool result that
+is itself a JSON document).
