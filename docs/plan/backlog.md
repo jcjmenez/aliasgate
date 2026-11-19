@@ -105,3 +105,20 @@ that already run those.
 
 Review licences and content of public PII datasets and add loaders for the acceptable ones, to
 publish numbers comparable with other tools.
+
+## 14. Byte-stable history for signed reasoning
+
+Anthropic models reject a replayed `thinking` block when anything before it changed (preserved
+thinking). Slice 08 found three ways the gateway can change an earlier turn on resend:
+propagation revealing an entity an earlier text contained undetected, a placeholder variant
+written by the model (`[person_1]`) coming back as `[PERSON_1]`, and an unresolved placeholder
+becoming `[LITERAL_n]`. Options: restore variants and unresolved placeholders so that they
+re-pseudonymise to the same text, and an option to stop propagation into earlier turns.
+Measure first with a replay of real conversations.
+
+## 15. Telling the model about placeholders
+
+Models sometimes refuse a task because they see placeholders and take them for an unfilled
+template (seen in the slice 08 manual check). An opt-in system note, added by the dialect, would
+say that bracketed placeholders stand for real values the model must use as given. Measure its
+effect with the utility evaluation (section 5) before turning it on by default.

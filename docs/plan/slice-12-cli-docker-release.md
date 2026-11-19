@@ -109,6 +109,13 @@ the tag or publish yourself; the maintainer does that.**
   string), and Azure's older `/openai/deployments/{name}/...?api-version=...` paths, which are
   not gateway routes. Verify the Azure path and header again when writing the document, and run
   the manual check of this slice against Azure as well, if a resource is available.
+- Anthropic clients (found in slice 08): Claude in Microsoft Foundry works with
+  `upstreams.anthropic.base_url: https://<resource>.services.ai.azure.com/anthropic`, the key
+  in `x-api-key`, and the deployment name as `model` (checked on 2026-11-18). Document the
+  passthrough format `"<upstream> <METHOD> <path>"`, the plain-segment path rule, and that a
+  method and path can name only one upstream. Document the preserved-thinking caveat in the slice 08 decisions: an earlier
+  turn that changes on resend (propagation, a model-written placeholder variant, an unresolved
+  placeholder) makes the provider reject the thinking blocks after it.
 - Logging (slice 06): one JSON line per request with `request_id`, `route`, `status`,
   `duration_ms`, `slots`, `entities` and `unresolved_placeholders`. Uvicorn's access log is off.
   The `httpx` and `httpcore` loggers stay at WARNING, because they would log the forwarded
