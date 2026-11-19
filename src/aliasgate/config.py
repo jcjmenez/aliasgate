@@ -10,7 +10,7 @@ import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Annotated, Any, Final, Literal
+from typing import Annotated, Any, Final, Literal, Self
 from urllib.parse import unquote, urlsplit
 
 import yaml
@@ -23,6 +23,7 @@ from pydantic import (
     ValidationInfo,
     create_model,
     field_validator,
+    model_validator,
 )
 from pydantic_settings import BaseSettings, EnvSettingsSource
 from pydantic_settings.sources.utils import parse_env_vars
@@ -98,6 +99,7 @@ BaseUrl = Annotated[str, AfterValidator(_base_url)]
 EntityType = Annotated[str, AfterValidator(validate_entity_type)]
 PhoneRegion = Annotated[str, StringConstraints(pattern=r"^[A-Z]{2}$")]
 PassthroughPath = Annotated[str, AfterValidator(_passthrough_entry)]
+ModelLabel = Annotated[str, StringConstraints(min_length=1)]
 
 
 class _Section(BaseModel):
@@ -173,12 +175,33 @@ class DictionarySettings(_Section):
 
 
 class MLSettings(_Section):
-    """ML detector settings. Accepted and validated now; used from slice 09."""
+    """ML detector: a GLiNER model from the optional `ml` extra, off by default.
+
+    The default model is `urchade/gliner_multi_pii-v1` (Apache-2.0; en, fr, de, es, pt, it),
+    pinned to a revision. `labels` maps model labels to entity types. Texts are cut into windows
+    of `window_words` model words overlapping by `overlap_words`; results are cached for
+    `cache_entries` texts (0 disables the cache).
+    """
 
     enabled: bool = False
-    model: str | None = None
+    model: Annotated[str, StringConstraints(min_length=1)] = "urchade/gliner_multi_pii-v1"
+    revision: Annotated[str, StringConstraints(min_length=1)] | None = (
+        "1fcf13e85f4eef5394e1fcd406cf2ca9ea82351d"
+    )
     threshold: float = Field(default=0.4, ge=0.0, le=1.0)
-    labels: dict[str, EntityType] = Field(default_factory=dict)
+    labels: dict[ModelLabel, EntityType] = Field(
+        default_factory=lambda: {"person": "PERSON", "organization": "ORG", "address": "ADDRESS"},
+        min_length=1,
+    )
+    window_words: int = Field(default=250, ge=1)
+    overlap_words: int = Field(default=50, ge=0)
+    cache_entries: int = Field(default=4096, ge=0)
+
+    @model_validator(mode="after")
+    def _overlap_is_smaller_than_the_window(self) -> Self:
+        if self.overlap_words >= self.window_words:
+            raise ValueError("overlap_words must be smaller than window_words")
+        return self
 
 
 class DetectionSettings(_Section):
@@ -255,12 +278,23 @@ def _environment_data(env: Mapping[str, str]) -> dict[str, Any]:
     return data
 
 
-def _deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+def _deep_merge(
+    base: Mapping[str, Any], override: Mapping[str, Any], section: type[BaseModel]
+) -> dict[str, Any]:
+    """Sections merge key by key; any other value, mappings such as `ml.labels` included, is
+    replaced, so the environment can also remove entries the file sets."""
     merged = dict(base)
     for key, value in override.items():
         current = merged.get(key)
-        if isinstance(value, Mapping) and isinstance(current, Mapping):
-            merged[key] = _deep_merge(current, value)
+        field = section.model_fields.get(key)
+        subsection = field.annotation if field is not None else None
+        if (
+            isinstance(subsection, type)
+            and issubclass(subsection, BaseModel)
+            and isinstance(value, Mapping)
+            and isinstance(current, Mapping)
+        ):
+            merged[key] = _deep_merge(current, value, subsection)
         else:
             merged[key] = value
     return merged
@@ -275,7 +309,9 @@ def load_settings(path: Path | None, env: Mapping[str, str] = os.environ) -> Set
         if file_data is None:
             file_data = {}
     env_data = _environment_data(env)
-    data = _deep_merge(file_data, env_data) if isinstance(file_data, Mapping) else file_data
+    data = (
+        _deep_merge(file_data, env_data, Settings) if isinstance(file_data, Mapping) else file_data
+    )
     base_dir = path.absolute().parent if path is not None else Path.cwd()
     return Settings.model_validate(data, context={_BASE_DIR: base_dir})
 

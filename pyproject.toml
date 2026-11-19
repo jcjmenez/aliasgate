@@ -27,6 +27,12 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
+[project.optional-dependencies]
+ml = [
+    "gliner>=0.2.30",
+    "protobuf>=7.36.2",
+]
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.100",

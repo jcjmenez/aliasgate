@@ -84,6 +84,11 @@ so tests and multiple app instances do not collide.
 Label values are a closed set chosen by the gateway (routes, entity types from configuration,
 detector names, fixed codes). **Never use request-derived text as a label value.**
 
+(Found in slice 09: `CachedDetector.stats()` returns cumulative `(hits, misses)` and is the
+source for `aliasgate_detection_cache_total`. A failed detection counts as a miss. The factory
+wraps only the ML detector, so the cache counter exists only with ML on. The warm-up at start-up
+calls the inner detector directly, not through the cache.)
+
 To report `source` and per-detector timings, the engine needs to expose them. Extend
 `PseudonymizedBatch` with a `stats` field:
 

@@ -146,6 +146,11 @@ A second test, marked `ml`, runs with the ML detector enabled and **prints** the
 `PERSON`, `ORG` and `ADDRESS` without asserting thresholds. Copy its output into
 `docs/evaluation.md` as the first published baseline, with the model id, revision and date.
 
+(Found in slice 09: the default model over-predicts, which the precision column should show.
+In a Spanish business text it labelled "La reunión con el cliente" as a person. Build the ML
+detector the way `factory.py` does, so that the windows and the cache are the same. Loading the
+model takes several seconds, so share one instance across the corpora.)
+
 ### `docs/evaluation.md`
 
 Explains the metrics in plain terms, how to run the command, how to write a corpus from your own

@@ -60,6 +60,12 @@ OpenAI Privacy Filter, Presidio (for its recognisers in many languages), a local
 second-opinion detector for high-sensitivity deployments. Each is a `Detector`. Compare them
 with the evaluation harness before recommending any.
 
+Found in slice 09: GLiNER scores spans of at most `max_width` words (12 for the default
+model), so a longer address can only be detected in part. GLiNER2 models
+(`fastino/gliner2-privacy-filter-PII-multi`) need the separate `gliner2` package. The default
+model's loader also fetches `microsoft/mdeberta-v3-base`'s tokenizer unpinned; a backend that
+loads every file from one pinned revision would close that gap.
+
 ## 8. Per-tool restore policy
 
 Let the operator list tools whose arguments must not receive restored values (for example a URL
@@ -94,7 +100,9 @@ with the same review for the Anthropic dialect.
 
 OpenTelemetry tracing (attributes limited to counts and types), Helm chart, hot reload of
 dictionaries, ONNX or quantised model for faster CPU inference, batching of inference across
-concurrent requests.
+concurrent requests. The ML detector runs one inference at a time per
+process; the windows of one text could also be batched into one `inference` call (measured in
+slice 09: 2.6 s for 3,000 words, one window after another).
 
 ## 12. Adapters
 
