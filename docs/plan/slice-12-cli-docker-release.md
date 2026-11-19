@@ -99,7 +99,18 @@ the tag or publish yourself; the maintainer does that.**
   `ALIASGATE_DETECTION__ML__LABELS` replaces the file's labels.)
 - What the user will notice: placeholders in model reasoning, unresolved placeholders, tasks
   that degrade (list from the threat model), rejected images and files.
-- Every error code the gateway can return, with cause and remedy, in one table.
+- Every error code the gateway can return, with cause and remedy, in one table. (Found in
+  slice 10: `leak_audit_failed` (500) means a detected value was still somewhere in the
+  outbound body. Typical causes are a field forwarded unchanged (OpenAI `metadata`, tool names,
+  `enum` values, `model`), `propagate: false`, or a variant with the same key that propagation
+  does not replace (`STRASSE` for `Straße`, decomposed accents, full-width letters).
+  `policy.leak_audit: false` turns the audit off; say that this removes the last check before
+  data leaves.)
+- Metrics (slice 10): list them with their labels, the `outcome` values and which error codes
+  fall under each one (slice 10 decisions). Suggest alerts on
+  `aliasgate_leak_audit_failures_total`, `rejections_total` by code and rising
+  `unresolved_placeholders_total`. Document the `x-aliasgate-entities` response header. Do not
+  set `PROMETHEUS_MULTIPROC_DIR` unless metric files on disk are acceptable.
 - Notes carried over from earlier slices: `metadata` in OpenAI requests is not stripped; tool
   names and enum values are not pseudonymised. Also forwarded unchanged (slice 05, decided with
   the maintainer): `prompt_cache_key`, which OpenAI recommends in place of `user` and which may

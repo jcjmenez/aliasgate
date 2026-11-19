@@ -137,6 +137,74 @@ pseudonymisation happened without reading logs. A count only.
    upstream answer contains request B's placeholder numbers that do not exist in A; A's response
    leaves them unresolved.
 
+### Decisions made while implementing (slice 10)
+
+- Checked on 2026-11-20 in the installed sources of `prometheus-client` 0.26.0 (PyPI,
+  2026-07-24, licence Apache-2.0 AND BSD-2-Clause, no dependencies): `CollectorRegistry`,
+  `Counter`, `Histogram`, `generate_latest`, `CONTENT_TYPE_LATEST`
+  (`text/plain; version=1.0.0; charset=utf-8`) and `CounterMetricFamily` for a custom
+  collector. Counters are declared without `_total`, and the client adds it. Every counter also
+  exposes a `_created` timestamp sample. If `PROMETHEUS_MULTIPROC_DIR` is set, the client
+  writes metric values to files in that directory. The values and labels hold no text.
+- Folding, decided with the maintainer: the audit searches both ways. An entity is found when
+  the term pattern of propagation matches the string, or when its key matches the string after
+  NFKC normalisation and case folding. Tests pin both cases. `STRASSE` for `Straße`, a
+  decomposed `é` and full-width `ＡＣＭＥ` share the entity's key, but the pattern misses them,
+  and so does propagation, so these requests are now rejected instead of forwarded. `İvan` and
+  `ıvan` for `Ivan` are found by the pattern. Propagation that folds the same way is
+  backlog §16.
+- `audit_outbound` takes `payload: object`, not `Any`, because AGENTS.md allows no `Any` in core
+  modules. It walks values iteratively, so nesting depth is no limit. It runs in a worker
+  thread. If the audit itself fails, the request gets 500 `internal_error`, logged with stage
+  `audit`, and is not forwarded. `min_length` is `detection.min_propagation_length`.
+- Audit latency, measured on an Apple M5 Pro: a conversation of 100 messages, about 40,000
+  characters, with 200 entities. Searching each entity on its own took 112.6 ms, over the
+  50 ms limit. One alternation per side (term patterns, folded keys), longest first, takes
+  1.7 ms (median of 7). The audit searches each entity on its own only after the alternation
+  found something, to count the leak. A property test checks that the result equals
+  searching each entity on its own.
+- Every string value of the body is audited, as specified, and that has consequences:
+  - A detected value in a field the gateway forwards unchanged now rejects the request.
+    These fields are OpenAI `metadata` (decided in slice 05), Anthropic `metadata` keys other
+    than `user_id`, tool names, `enum` values, ids and `model`.
+  - With `propagate: false`, a repeated entity that no detector finds the second time
+    rejects the request.
+  - Thinking blocks are string values too, so they are audited.
+- Outcome: every `GatewayError` carries its outcome.
+  - `rejected`: `invalid_json`, `request_too_large`, `unknown_endpoint`,
+    `unsupported_content`, `malformed_request`, `leak_audit_failed`.
+  - `upstream_error`: `upstream_timeout`, `upstream_unreachable`, and any error status the
+    provider answered.
+  - `gateway_error`: `pseudonymization_failed`, `restoration_failed`, `internal_error`.
+  - Streams: a read error mid-stream is `upstream_error`. A transformer or send failure is
+    `gateway_error`. A client that goes away is `ok`.
+  - `rejections_total` counts every error response the gateway produced, by its code.
+- `entities_total` counts replaced occurrences, so that `propagation` can be a source. The log
+  line still counts unique entities by type. `BatchStats` counts by the entity's type (that of
+  its first occurrence) and the span's source.
+- `x-aliasgate-entities` is on every response. It is the number of entities in the request's
+  mapping, `LITERAL` ones included, and 0 when nothing was pseudonymised. `GET /metrics` is
+  counted like any request, under route `GET /metrics`. With metrics off, it answers 404
+  `unknown_endpoint`.
+- Overhead phases:
+  - `pseudonymize`: `prepare_request`, the engine, writing the slots and the audit.
+  - `restore`: restoring a non-streamed body, or the time spent in the stream transformer.
+  - A phase that does not complete records nothing.
+- The cache metric is a collector that reads `CachedDetector.stats()` at scrape time. To find
+  the caches, `Pseudonymizer` gained a read-only `detectors` property (architecture §4.1).
+- `Mapping` and `Entity` raise `TypeError` from `__getstate__` and `__reduce__`, so they cannot
+  be pickled or copied either. For `Entity`, `__getstate__` alone already blocks both: a
+  mutation check that removed its `__reduce__` passed. `__reduce__` is kept, because this slice
+  asks for it.
+- `terms.term_body` exposes the body of `build_term_pattern`, so that the audit's alternation
+  uses exactly the propagation pattern. The log-hygiene helpers moved to
+  `tests/proxy/hygiene.py`, shared by the slice 06 tests and the invariant tests.
+- The invariant tests cover 11 failures per dialect before forwarding: too large, invalid
+  JSON, not an object, malformed, unsupported content, `prepare_request` raising, a detector
+  raising, `apply` raising, slots never written (caught by the audit), the audit raising, and
+  an unencodable lone surrogate. The surface property test passed a stress run of 1,000
+  conversations, and the audit property tests passed 20,000 examples each.
+
 ## Tests (other)
 
 `test_audit.py`

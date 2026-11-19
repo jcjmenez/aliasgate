@@ -299,3 +299,46 @@ def test_appending_texts_keeps_earlier_entities_and_texts(
     with_propagation = _engine().pseudonymize(first + appended)
     for entity in _engine().pseudonymize(first).mapping.entities():
         assert with_propagation.mapping.get(entity.key) == entity
+
+
+def test_stats_count_replaced_occurrences_by_entity_type_and_source() -> None:
+    engine = Pseudonymizer([WordListDetector({"Alice": "PERSON"}, name="words")])
+    batch = engine.pseudonymize(["Alice met alice.", "ALICE and [PERSON_1]", "nobody"])
+    assert dict(batch.stats.entities_by_type_and_source) == {
+        ("PERSON", "words"): 1,
+        ("PERSON", "propagation"): 2,
+        ("LITERAL", "literal"): 1,
+    }
+
+
+def test_stats_use_the_entity_type_of_the_first_occurrence() -> None:
+    first = WordListDetector({"Alice": "PERSON"}, name="first")
+    second = WordListDetector({"ALICE": "ORG"}, name="second")
+    batch = Pseudonymizer([first, second], propagate=False).pseudonymize(["Alice", "x ALICE"])
+    assert batch.texts == ("[PERSON_1]", "x [PERSON_1]")
+    assert dict(batch.stats.entities_by_type_and_source) == {
+        ("PERSON", "first"): 1,
+        ("PERSON", "second"): 1,
+    }
+
+
+def test_stats_time_every_detector_including_the_literal_one() -> None:
+    engine = Pseudonymizer(
+        [WordListDetector(WORDS, name="words"), WordListDetector({}, name="empty")]
+    )
+    seconds = engine.pseudonymize(["Alice", "Bob"]).stats.detector_seconds
+    assert set(seconds) == {"literal", "words", "empty"}
+    assert all(value >= 0.0 for value in seconds.values())
+
+
+def test_stats_of_an_empty_batch_are_empty_counts() -> None:
+    batch = _engine().pseudonymize([])
+    assert dict(batch.stats.entities_by_type_and_source) == {}
+    assert set(batch.stats.detector_seconds) == {"literal", "fake"}
+
+
+def test_the_detectors_are_exposed_in_the_order_they_run() -> None:
+    words = WordListDetector(WORDS)
+    detectors = Pseudonymizer([words]).detectors
+    assert [detector.name for detector in detectors] == ["literal", "fake"]
+    assert detectors[1] is words
