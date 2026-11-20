@@ -36,8 +36,9 @@ writes it. The most important ones:
 
 - Branch from `main`, use [Conventional Commits](https://www.conventionalcommits.org/).
 - Describe what changed, why, and how you tested it.
-- If the change touches detection, include before and after numbers from the evaluation harness
-  once it exists (slice 11).
+- If the change touches detection, include before and after numbers from the
+  [evaluation harness](docs/evaluation.md) (`uv run python -m aliasgate.eval
+  tests/eval/corpus/*.jsonl`).
 - If the change touches a security invariant listed in
   [docs/threat-model.md](docs/threat-model.md), say so explicitly.
 

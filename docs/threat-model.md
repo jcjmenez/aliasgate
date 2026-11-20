@@ -23,7 +23,8 @@ These are known and not fully solved. A deployment must accept or mitigate each 
 
 1. **Missed detections.** A name, company or address that no layer recognises is sent as is.
    Mitigations: the company dictionary for known terms, a recall-oriented ML threshold,
-   propagation, and measuring recall on your own data with the evaluation harness.
+   propagation, and measuring recall on your own data with the
+   [evaluation harness](evaluation.md).
 2. **Identification by context.** Job titles, rare events, small-town references or combinations
    of facts can identify a person without any detectable entity. No mitigation in the gateway.
 3. **Content the gateway cannot read.** Images, audio and file attachments are rejected by

@@ -22,7 +22,7 @@ Read [AGENTS.md](../../AGENTS.md) first. Its rules apply to every slice.
 | 08 | [slice-08-anthropic-dialect.md](slice-08-anthropic-dialect.md) | Anthropic Messages, streaming included | 07 | done |
 | 09 | [slice-09-ml-detector.md](slice-09-ml-detector.md) | GLiNER detector, detection cache | 04 | done |
 | 10 | [slice-10-audit-policy-metrics.md](slice-10-audit-policy-metrics.md) | Leak audit, metrics, logging invariant | 08 | done |
-| 11 | [slice-11-evaluation.md](slice-11-evaluation.md) | Evaluation harness and CI recall gate | 04 | planned |
+| 11 | [slice-11-evaluation.md](slice-11-evaluation.md) | Evaluation harness and CI recall gate | 04 | done |
 | 12 | [slice-12-cli-docker-release.md](slice-12-cli-docker-release.md) | CLI, Docker image, usage docs, v0.1.0 | 09, 10, 11 | planned |
 
 Slices 02 and 03 can be done in either order. Slices 09 and 11 can be done any time after 04.

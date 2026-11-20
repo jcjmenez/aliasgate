@@ -101,6 +101,25 @@ span per match (`match.start`, `match.end`). Deduplicate identical `(start, end)
 written in international format (`+34…`) are found regardless of region. Verify the matcher API
 against the installed version of `phonenumbers` before use.
 
+**Found in slice 11** (the evaluation corpus; decided with the maintainer):
+
+- IBANs written in lower or mixed case (`es91 2100 …`) were missed, because the candidate
+  pattern was upper case only. The candidate now accepts letters in any case; `iban_valid`
+  already ignored case, and the mod-97 check still filters words that have the shape.
+- An ISBN-13 that happens to pass the Luhn check (one in ten) was taken for a card. A card
+  candidate of exactly 13 digits starting with 978 or 979 (the EAN "Bookland" prefix) is now
+  rejected; no card network issues such numbers. Longer candidates with that prefix are
+  still cards.
+- Order and invoice numbers such as `ORD-2013-015180` and `2024-001234` were taken for US
+  phones (201-301-5180). A national number, written without an international prefix, must now
+  be grouped as its country writes it: matches come from `Leniency.STRICT_GROUPING`. A number
+  written with `+` or the region's international dialling prefix (`00`, `011`) needs only
+  `Leniency.VALID`, because the prefix is evidence enough. The `VALID` matcher clears the
+  country code source of its matches, so the raw string is parsed again with
+  `keep_raw_input=True` to read it. Checked in the installed sources of `phonenumbers` 9.0.43
+  (`phonenumbermatcher.py`). Every common Spanish and US grouping tried still matches; odd
+  national groupings such as `6123 456 78` no longer do.
+
 **Secrets.** Patterns for well-known credential shapes:
 
 - OpenAI-style and Anthropic-style keys: `sk-[A-Za-z0-9_-]{20,}`

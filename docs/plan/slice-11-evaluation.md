@@ -157,6 +157,59 @@ Explains the metrics in plain terms, how to run the command, how to write a corp
 (carefully handled) samples, the baseline numbers, and a clear statement that synthetic-corpus
 numbers are an upper bound on real-world performance.
 
+### Decisions made while implementing (slice 11)
+
+- Checked on 2026-11-20: `faker` 40.54.0 (MIT, dev only; on Windows it needs `tzdata`),
+  `phonenumbers` 9.0.43 (`Leniency.STRICT_GROUPING` and the matcher, in the installed
+  sources), and for the ML baseline `gliner` 0.2.30, `transformers` 5.22.2, `torch` 2.15.0.
+- `analyze`, decided with the maintainer: one private method does detection, placeholder
+  assignment and propagation; `analyze` returns its spans and `pseudonymize` replaces them, so
+  the two cannot drift. Rebuilding the entity of a propagated span from `analyze`'s output
+  would have needed a second copy of the propagation search. Spans carry the type of the
+  entity they are replaced as (the first occurrence's) and keep their detector's source,
+  score and priority; propagated spans have source `propagation` and score 1.0
+  (architecture §4.1).
+- Round-trip oracle, decided with the maintainer: `expected_restoration` renders every span of
+  `analyze` as its entity's canonical surface (by key for a detected span; for a propagated
+  span, the longest entity of its type whose term pattern matches it). Slice 03's oracle
+  assumes propagation is on with a minimum length of 3, and would report false failures with
+  `propagate: false`. It moved to `tests/oracles.py`; a property test and a test over both
+  corpora check that the two agree.
+- Rules, decided with the maintainer, because the corpus broke the gate: lower-case IBANs are
+  detected, a 13-digit card candidate starting with 978 or 979 (an ISBN) is rejected, and a
+  national phone number must be grouped as its country writes it (`STRICT_GROUPING`), while
+  one with an international prefix needs only `VALID`. Before the fixes, IBAN recall was 0.82
+  (en) and 0.77 (es), and 2.4% of the English examples without entities had a predicted span
+  (order numbers taken for US phones). The details are in the slice 02 file.
+- `Report` also has `examples`, `entity_free` (examples without gold spans),
+  `entity_free_flagged` (those with a predicted span), `misses` and `entity_free_flag_rate`.
+  The leak rate is 0.0 without gold characters. `evaluate` takes an optional keyword
+  `types`: only gold and predicted spans of those types are scored, while a predicted span of
+  any type still covers gold characters. A miss is a gold span with at least one uncovered
+  character.
+- `load_corpus` rejects unknown keys, empty spans, duplicate ids and booleans as offsets, and
+  skips blank lines. `CorpusError` is a `ValueError`.
+- The command prints one section per `lang` value, sorted; `--max-leak-rate` applies to each
+  language. Exit code 2 covers invalid options, configuration, corpus (including an id used in
+  two files) and a detector failure. An unexpected exception is reported by class name only,
+  because its message may hold text; invalid YAML is reported without the parser's message,
+  which quotes the file.
+- Generator: each language has its own Faker instance (`seed_instance`), so that the two
+  files are independent. Faker's phone numbers are often invalid, so phones are valid numbers
+  only: Spanish ones from Faker filtered with `phonenumbers`, US ones in the 555-0100 to
+  555-0199 range reserved for fiction, and a tenth in Ofcom's drama range `020 7946 0xxx`.
+  IP addresses come from documentation and private ranges and emails from `example.com` and
+  `example.org`. There are 47 templates with entities and 15 without per language; 85
+  examples (17%) have no entity, and 12% (en) and 14% (es) repeat an entity in another case.
+  The SSN repeats in the templates have no letters, so they do not count.
+- `tests/eval/__init__.py` exists because `tests/proxy/test_metrics.py` already exists:
+  without a package, pytest and mypy refuse two modules named `test_metrics`. The command's
+  tests are in `tests/eval/test_command.py`. `tools` is on the paths of pytest, mypy and ruff,
+  so that the tests can import the generator.
+- Found while measuring, recorded in backlog §9: a CIF with a hyphen after the letter and an
+  SSN without hyphens are not detected, and a US SSN whose digits form a valid Spanish number
+  is replaced as `PHONE` (16 English examples).
+
 ## Tests
 
 `test_metrics.py`

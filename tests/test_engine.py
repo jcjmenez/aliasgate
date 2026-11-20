@@ -1,12 +1,15 @@
+import re
+from collections import Counter
+
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from aliasgate.engine import DetectionError, PseudonymizedBatch, Pseudonymizer, restore
-from aliasgate.placeholders import TOLERANT
 from aliasgate.terms import build_term_pattern
-from aliasgate.types import PRIORITY_ML, Span
+from aliasgate.types import PRIORITY_LITERAL, PRIORITY_ML, PRIORITY_PROPAGATION, Span
 from fakes import FailingDetector, WordListDetector
+from oracles import propagation_oracle
 
 WORDS = {"Alice": "PERSON", "Bob": "PERSON", "ACME": "ORG"}
 
@@ -238,28 +241,6 @@ _BATCH = st.lists(_TEXT, max_size=4)
 _PROPERTY = settings(max_examples=300, deadline=None)
 
 
-def _propagation_oracle(texts: list[str], batch: PseudonymizedBatch) -> list[str]:
-    """Original texts with every propagatable case variant rendered as its canonical surface."""
-    entities = sorted(
-        (e for e in batch.mapping.entities() if e.entity_type != "LITERAL" and len(e.key) >= 3),
-        key=lambda entity: len(entity.surface),
-        reverse=True,
-    )
-    expected = []
-    for text in texts:
-        claimed = [(match.start(), match.end()) for match in TOLERANT.finditer(text)]
-        replacements = []
-        for entity in entities:
-            for match in build_term_pattern(entity.surface).finditer(text):
-                if all(match.end() <= start or end <= match.start() for start, end in claimed):
-                    claimed.append((match.start(), match.end()))
-                    replacements.append((match.start(), match.end(), entity.surface))
-        for start, end, surface in sorted(replacements, reverse=True):
-            text = text[:start] + surface + text[end:]
-        expected.append(text)
-    return expected
-
-
 @_PROPERTY
 @given(_BATCH)
 def test_round_trip_without_propagation_restores_the_exact_input(texts: list[str]) -> None:
@@ -273,7 +254,7 @@ def test_round_trip_with_propagation_renders_variants_as_the_canonical_surface(
     texts: list[str],
 ) -> None:
     batch = _engine().pseudonymize(texts)
-    assert _restored(batch) == _propagation_oracle(texts, batch)
+    assert _restored(batch) == propagation_oracle(texts, batch)
 
 
 @_PROPERTY
@@ -342,3 +323,69 @@ def test_the_detectors_are_exposed_in_the_order_they_run() -> None:
     detectors = Pseudonymizer([words]).detectors
     assert [detector.name for detector in detectors] == ["literal", "fake"]
     assert detectors[1] is words
+
+
+# analyze (slice 11) ---------------------------------------------------------------------------
+
+
+def test_analyze_returns_the_final_spans_of_each_text_without_replacing() -> None:
+    engine = Pseudonymizer([WordListDetector({"Alice": "PERSON", "ACME": "ORG"}, name="words")])
+    assert engine.analyze(["Alice joined ACME.", "alice left"]) == [
+        [
+            Span(0, 5, "PERSON", 0.9, "words", PRIORITY_ML),
+            Span(13, 17, "ORG", 0.9, "words", PRIORITY_ML),
+        ],
+        [Span(0, 5, "PERSON", 1.0, "propagation", PRIORITY_PROPAGATION)],
+    ]
+
+
+def test_analyze_without_propagation_reports_only_detected_spans() -> None:
+    assert _engine(propagate=False).analyze(["Alice and alice"]) == [
+        [Span(0, 5, "PERSON", 0.9, "fake", PRIORITY_ML)]
+    ]
+
+
+def test_analyze_reports_placeholder_literals_and_drops_allow_listed_values() -> None:
+    spans = _engine(allow_list=["ACME"]).analyze(["[PERSON_1] at ACME"])
+    assert spans == [[Span(0, 10, "LITERAL", 1.0, "literal", PRIORITY_LITERAL)]]
+
+
+def test_analyze_spans_carry_the_type_of_their_entity() -> None:
+    first = WordListDetector({"Alice": "PERSON"}, name="first")
+    second = WordListDetector({"ALICE": "ORG"}, name="second")
+    engine = Pseudonymizer([first, second], propagate=False)
+    assert engine.analyze(["Alice", "x ALICE"]) == [
+        [Span(0, 5, "PERSON", 0.9, "first", PRIORITY_ML)],
+        [Span(2, 7, "PERSON", 0.9, "second", PRIORITY_ML)],
+    ]
+
+
+def test_analyze_of_an_empty_batch_is_empty() -> None:
+    assert _engine().analyze([]) == []
+    assert _engine().analyze([""]) == [[]]
+
+
+def test_analyze_fails_closed_like_pseudonymize() -> None:
+    with pytest.raises(DetectionError):
+        Pseudonymizer([FailingDetector()]).analyze(["Alice"])
+
+
+@_PROPERTY
+@given(_BATCH, st.booleans())
+def test_pseudonymize_replaces_exactly_the_spans_that_analyze_reports(
+    texts: list[str], propagate: bool
+) -> None:
+    engine = _engine(propagate=propagate)
+    batch = engine.pseudonymize(texts)
+    analyzed = engine.analyze(texts)
+    for text, spans, output in zip(texts, analyzed, batch.texts, strict=True):
+        assert spans == sorted(spans, key=lambda span: span.start)
+        pattern, position = [], 0
+        for span in spans:
+            pattern.append(re.escape(text[position : span.start]))
+            pattern.append(rf"\[{span.entity_type}_[1-9][0-9]*\]")
+            position = span.end
+        pattern.append(re.escape(text[position:]))
+        assert re.fullmatch("".join(pattern), output)
+    counts = Counter((span.entity_type, span.source) for spans in analyzed for span in spans)
+    assert dict(batch.stats.entities_by_type_and_source) == dict(counts)

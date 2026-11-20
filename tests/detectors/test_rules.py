@@ -4,6 +4,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from aliasgate.detectors.checksums import luhn_valid
 from aliasgate.detectors.rules import DEFAULT_RULE_TYPES, RuleDetector
 from aliasgate.types import PRIORITY_RULE, Span
 
@@ -82,6 +83,8 @@ NO_IDENTIFIERS = [
     "We published task-specific-fine-tuning recipes in version 2.3.",
     "Please review the report before 5:30 pm on Friday.",
     "Revenue grew 12% year over year, reaching 4.5 million in Q3 2024.",
+    "Order ORD-2013-015180 and invoice 2024-001234 were paid.",
+    "The ISBN of the book is 978-0-00-000004-0.",
 ]
 
 
@@ -344,3 +347,103 @@ def test_detect_returns_well_formed_sorted_spans_for_arbitrary_text(text: str) -
         assert 0 <= span.start < span.end <= len(text)
         assert (span.source, span.priority) == ("rules", PRIORITY_RULE)
         assert span.entity_type in DEFAULT_RULE_TYPES | {"URL"}
+
+
+# Found in slice 11, with the evaluation corpus -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "es91 2100 0418 4502 0005 1332",
+        "es9121000418450200051332",
+        "gb82 west 1234 5698 7654 32",
+        "De89 3704 0044 0532 0130 00",
+    ],
+)
+def test_iban_in_lower_or_mixed_case_is_detected(value: str) -> None:
+    assert _found(DETECTOR, f"Contact: {value}.", "IBAN") == [value]
+
+
+def test_lower_case_iban_with_wrong_checksum_is_not_detected() -> None:
+    assert _found(DETECTOR, "Contact: es91 2100 0418 4502 0005 1333.", "IBAN") == []
+
+
+def test_lower_case_words_after_a_lower_case_iban_are_not_part_of_it() -> None:
+    text = "es91 2100 0418 4502 0005 1332 para pagar esto"
+    assert _found(DETECTOR, text, "IBAN") == ["es91 2100 0418 4502 0005 1332"]
+
+
+def test_iban_shaped_lower_case_words_are_not_an_iban() -> None:
+    assert _found(DETECTOR, "ab12 this that with them", "IBAN") == []
+
+
+@pytest.mark.parametrize("isbn", ["978-0-00-000004-0", "9790000000049", "979 0 00 000004 9"])
+def test_isbn_13_that_passes_luhn_is_not_a_card(isbn: str) -> None:
+    assert luhn_valid(isbn)
+    assert _found(DETECTOR, f"ISBN {isbn}.", "CREDIT_CARD") == []
+
+
+@pytest.mark.parametrize("value", ["4222222222222", "9780000000000007"])
+def test_other_13_digit_cards_and_long_cards_with_an_isbn_prefix_are_cards(value: str) -> None:
+    assert _found(DETECTOR, f"Card {value}.", "CREDIT_CARD") == [value]
+
+
+@pytest.mark.parametrize(
+    ("region", "text"),
+    [
+        ("US", "Order ORD-2013-015180 has shipped."),
+        ("US", "Factura 2024-001234 pagada."),
+        ("US", "Call 415 55 52 671 now"),
+        ("ES", "Llama al 6123 456 78 ya"),
+    ],
+)
+def test_national_number_grouped_against_its_country_format_is_not_a_phone(
+    region: str, text: str
+) -> None:
+    detector = RuleDetector(enabled_types={"PHONE"}, phone_regions=(region,))
+    assert detector.detect(text) == []
+
+
+@pytest.mark.parametrize(
+    ("region", "value"),
+    [
+        ("ES", "612 345 678"),
+        ("ES", "612 34 56 78"),
+        ("ES", "612-345-678"),
+        ("ES", "612.34.56.78"),
+        ("ES", "612345678"),
+        ("ES", "91 123 45 67"),
+        ("ES", "911 234 567"),
+        ("US", "(415) 555-2671"),
+        ("US", "(415)555-2671"),
+        ("US", "415-555-2671"),
+        ("US", "415.555.2671"),
+        ("US", "415 555 2671"),
+        ("US", "4155552671"),
+        ("US", "1-415-555-2671"),
+    ],
+)
+def test_national_number_grouped_as_its_country_writes_it_is_a_phone(
+    region: str, value: str
+) -> None:
+    detector = RuleDetector(enabled_types={"PHONE"}, phone_regions=(region,))
+    assert _found(detector, f"Tel {value} ok") == [value]
+
+
+@pytest.mark.parametrize(
+    ("region", "value"),
+    [
+        ("ES", "+33 123 456 789"),
+        ("ES", "+34 61 234 56 78"),
+        ("ES", "+49 3012 345678"),
+        ("ES", "0034 6123 45678"),
+        ("ES", "+1 415 5552671"),
+        ("US", "011 33 123 456 789"),
+    ],
+)
+def test_number_with_an_international_prefix_is_a_phone_in_any_grouping(
+    region: str, value: str
+) -> None:
+    detector = RuleDetector(enabled_types={"PHONE"}, phone_regions=(region,))
+    assert _found(detector, f"Tel {value} ok") == [value]
