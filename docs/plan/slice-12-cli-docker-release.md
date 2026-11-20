@@ -205,6 +205,8 @@ start. Keep the "What it does not guarantee" section unchanged.
   `HF_HUB_OFFLINE=1`. The health check uses `http.client`, which ignores proxy variables.
 - Release workflow. `ci.yml` gained `workflow_call`, and the release calls it first. The tag
   must equal `v` plus the package version. Order: CI, build, PyPI, images, GitHub release.
+  Changed before the first tag: images before PyPI, because a PyPI version can never be
+  uploaded again, so a failed image build must happen while the tag can still be moved.
   Third-party actions are pinned by commit. GHCR and `gh release` use the job's own
   `github.token`; nothing is stored. Images are built for `linux/amd64` and `linux/arm64` with
   QEMU, decided with the maintainer. The changelog section stops at the next heading or at the

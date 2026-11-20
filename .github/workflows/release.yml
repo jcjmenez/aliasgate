@@ -1,14 +1,16 @@
-# Release: pushing a tag vX.Y.Z runs the CI checks, publishes the package to PyPI with trusted
-# publishing (OIDC, no stored token), pushes the images ghcr.io/<owner>/aliasgate:X.Y.Z and
-# :X.Y.Z-ml, and creates a GitHub release with the changelog section of X.Y.Z.
+# Release: pushing a tag vX.Y.Z runs the CI checks, pushes the images
+# ghcr.io/<owner>/aliasgate:X.Y.Z and :X.Y.Z-ml, publishes the package to PyPI with trusted
+# publishing (OIDC, no stored token), and creates a GitHub release with the changelog section of
+# X.Y.Z. PyPI comes after the images because a PyPI version can never be uploaded again: if an
+# image fails, delete the tag, fix, and push the tag again; nothing irreversible has happened.
 #
 # Before the first tag, the maintainer configures by hand:
 #   1. On PyPI, a (pending) trusted publisher for project "aliasgate": this repository, workflow
 #      "release.yml", environment "pypi".
 #   2. In the repository settings, an environment named "pypi" (optionally with required
 #      reviewers and a rule that only v* tags may deploy to it).
-# To release: set the version in pyproject.toml and aliasgate/__init__.py, move the changelog's
-# Unreleased entries under the new version, merge, then push the tag vX.Y.Z from main.
+# To release: set the version in pyproject.toml and src/aliasgate/__init__.py, move the
+# changelog's Unreleased entries under the new version, merge, then push the tag vX.Y.Z from main.
 #
 # Third-party actions are pinned by commit; the comment names the release.
 
@@ -61,7 +63,7 @@ jobs:
           if-no-files-found: error
 
   pypi:
-    needs: build
+    needs: [build, images]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -76,7 +78,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
   images:
-    needs: [build, pypi]
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -112,7 +114,7 @@ jobs:
           push: true
 
   release:
-    needs: [build, images]
+    needs: [build, images, pypi]
     runs-on: ubuntu-latest
     permissions:
       contents: write
