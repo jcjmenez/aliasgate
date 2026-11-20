@@ -77,7 +77,7 @@ regulation. Read the [threat model](docs/threat-model.md) before relying on it.
 | 08 | Anthropic Messages dialect | done |
 | 09 | ML detector (GLiNER) | done |
 | 10 | Leak audit, policy, metrics | done |
-| 11 | Evaluation harness | planned |
+| 11 | Evaluation harness | done |
 | 12 | CLI, Docker image, first release | planned |
 
 ## Development

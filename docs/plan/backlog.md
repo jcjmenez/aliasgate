@@ -76,15 +76,23 @@ fetcher), to limit the exfiltration path described in the threat model, risk 4.
 National identifiers and tax numbers of other countries, passport numbers, licence plates,
 national phone formats, more secret formats. One rule, its checksum and its vectors per change.
 
-Known gaps in the rules of slice 02, each a missed detection:
+Known gaps in the rules of slice 02, each a missed detection (lower-case IBANs were fixed in
+slice 11):
 
-- IBANs written in lower case (`es91 2100 …`): the candidate pattern is upper case only, although
-  `iban_valid` ignores case. The checksum would still filter false positives.
+- A Spanish CIF written with a hyphen after the letter (`B-58818501`), common on invoices.
+- A US SSN written without hyphens (`078051120`): nine bare digits are too ambiguous for the
+  current rule.
 - Email addresses with a non-ASCII local part (`josé@example.com`).
 - A private key pasted without its `-----END … PRIVATE KEY-----` line: the PEM rule needs both
   lines, so the body is forwarded.
 - With `URL` enabled, an email inside a URL wins the overlap (score 1.0 against 0.9) and the
   rest of the URL is not pseudonymised.
+
+Found in slice 11, a wrong type rather than a miss: a US SSN whose nine digits also form a valid
+Spanish number (`782-77-8477`) is replaced as `PHONE`, because the phone score (0.9) beats the
+SSN score (0.85), and the phone span may include an opening parenthesis. The value is covered,
+so nothing leaks, but the model sees the wrong type. Sixteen English examples of the synthetic
+corpus show it.
 
 ## 10. Request fields forwarded unchanged
 

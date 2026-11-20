@@ -1,5 +1,6 @@
 """Pseudonymisation engine (architecture §4) and placeholder restoration (§5.3)."""
 
+import dataclasses
 import json
 import re
 import time
@@ -13,7 +14,7 @@ from aliasgate.mapping import Entity, Mapping, normalize_key
 from aliasgate.placeholders import TOLERANT, parse_match
 from aliasgate.resolve import resolve_overlaps
 from aliasgate.terms import build_term_pattern
-from aliasgate.types import LITERAL, Detector, Span
+from aliasgate.types import LITERAL, PRIORITY_PROPAGATION, Detector, Span
 
 # Literal keys are the exact surface behind a prefix, so that "[PERSON_1]" and "[person_1]"
 # in the input stay two entities and both restore byte for byte (architecture §4.4).
@@ -21,8 +22,9 @@ _LITERAL_KEY_PREFIX = "\x00literal:"
 
 _PROPAGATION_SOURCE = "propagation"
 
-# (start, end, entity, source): a replaced range, its entity, and the detector that found it.
-type _Occurrence = tuple[int, int, Entity, str]
+# A replaced range and its entity. The span carries the entity's type and the detector that
+# found it ("propagation" for propagated ones).
+type _Occurrence = tuple[Span, Entity]
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,34 +101,51 @@ class Pseudonymizer:
         """The detectors in the order they run; the literal detector comes first."""
         return self._detectors
 
+    def analyze(self, texts: Sequence[str]) -> list[list[Span]]:
+        """The spans `pseudonymize` replaces in each text, sorted by start, without replacing.
+
+        Detected spans keep their detector's score, source and priority but carry the type of
+        the entity they are replaced as (that of its first occurrence); propagated spans have
+        source "propagation". Fails closed like `pseudonymize`.
+        """
+        return [[span for span, _ in found] for found in self._analyze(tuple(texts))[1]]
+
     def pseudonymize(self, texts: Sequence[str]) -> PseudonymizedBatch:
         """Pseudonymise all texts of one request as a batch (architecture §4.3)."""
         batch = tuple(texts)
-        seconds = dict.fromkeys((detector.name for detector in self._detectors), 0.0)
-        resolved = [self._detect(text, seconds) for text in batch]
-        mapping = Mapping()
-        occurrences: list[list[_Occurrence]] = [
-            [
-                (
-                    span.start,
-                    span.end,
-                    _assign(mapping, span, text[span.start : span.end]),
-                    span.source,
-                )
-                for span in spans
-            ]
-            for text, spans in zip(batch, resolved, strict=True)
-        ]
-        if self._propagate:
-            self._propagate_entities(mapping, batch, occurrences)
+        mapping, occurrences, seconds = self._analyze(batch)
         counts = Counter(
-            (entity.entity_type, source) for found in occurrences for _, _, entity, source in found
+            (span.entity_type, span.source) for found in occurrences for span, _ in found
         )
         return PseudonymizedBatch(
             tuple(_replace(text, found) for text, found in zip(batch, occurrences, strict=True)),
             mapping,
             BatchStats(dict(counts), seconds),
         )
+
+    def _analyze(
+        self, batch: tuple[str, ...]
+    ) -> tuple[Mapping, list[list[_Occurrence]], dict[str, float]]:
+        """Detect, assign placeholders and propagate: everything but the replacement.
+
+        Returns the mapping, each text's occurrences sorted by start, and detector timings.
+        `analyze` and `pseudonymize` are both views of this one result, so they cannot drift.
+        """
+        seconds = dict.fromkeys((detector.name for detector in self._detectors), 0.0)
+        resolved = [self._detect(text, seconds) for text in batch]
+        mapping = Mapping()
+        occurrences: list[list[_Occurrence]] = []
+        for text, spans in zip(batch, resolved, strict=True):
+            found = []
+            for span in spans:
+                entity = _assign(mapping, span, text[span.start : span.end])
+                found.append((dataclasses.replace(span, entity_type=entity.entity_type), entity))
+            occurrences.append(found)
+        if self._propagate:
+            self._propagate_entities(mapping, batch, occurrences)
+        for found in occurrences:
+            found.sort(key=lambda occurrence: occurrence[0].start)
+        return mapping, occurrences, seconds
 
     def _detect(self, text: str, seconds: dict[str, float]) -> list[Span]:
         spans: list[Span] = []
@@ -160,13 +179,21 @@ class Pseudonymizer:
             ),
             key=lambda entity: -len(entity.surface),
         )
-        occupied = [_Occupied((start, end) for start, end, _, _ in found) for found in occurrences]
+        occupied = [_Occupied((span.start, span.end) for span, _ in found) for found in occurrences]
         for entity in entities:
             pattern = build_term_pattern(entity.surface)
             for text, taken, found in zip(texts, occupied, occurrences, strict=True):
                 for match in pattern.finditer(text):
                     if taken.claim(match.start(), match.end()):
-                        found.append((match.start(), match.end(), entity, _PROPAGATION_SOURCE))
+                        span = Span(
+                            match.start(),
+                            match.end(),
+                            entity.entity_type,
+                            1.0,
+                            _PROPAGATION_SOURCE,
+                            PRIORITY_PROPAGATION,
+                        )
+                        found.append((span, entity))
 
 
 def _assign(mapping: Mapping, span: Span, surface: str) -> Entity:
@@ -178,10 +205,10 @@ def _assign(mapping: Mapping, span: Span, surface: str) -> Entity:
 def _replace(text: str, occurrences: list[_Occurrence]) -> str:
     pieces: list[str] = []
     position = 0
-    for start, end, entity, _ in sorted(occurrences, key=lambda occurrence: occurrence[0]):
-        pieces.append(text[position:start])
+    for span, entity in occurrences:  # sorted by start
+        pieces.append(text[position : span.start])
         pieces.append(entity.placeholder)
-        position = end
+        position = span.end
     pieces.append(text[position:])
     return "".join(pieces)
 

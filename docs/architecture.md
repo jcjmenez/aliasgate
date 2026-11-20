@@ -24,6 +24,7 @@ Three layers, with dependencies pointing only downwards:
 | Core | `aliasgate.types`, `placeholders`, `mapping`, `resolve`, `engine`, `stream`, `audit`, `detectors.*` | Strings and spans (`audit` walks any JSON value, without knowing its shape) | Provider JSON shapes, HTTP |
 | Dialects | `aliasgate.dialects.*` | The JSON shape of one provider API | HTTP, sockets |
 | Proxy | `aliasgate.proxy.*`, `config`, `cli`, `metrics` | HTTP, configuration, wiring | Detection internals |
+| Evaluation | `aliasgate.eval.*` | The core, plus configuration and wiring (`config`, `factory`) to build the engine as the gateway does | HTTP, dialects |
 
 The core has no third-party dependency except `phonenumbers` (and the optional ML extra). This
 keeps it usable as a library and as a plugin for other gateways.
@@ -101,6 +102,7 @@ class Pseudonymizer:
     def __init__(self, detectors: Sequence[Detector], *, allow_list: Iterable[str] = (),
                  propagate: bool = True, min_propagation_length: int = 3) -> None: ...
     def pseudonymize(self, texts: Sequence[str]) -> PseudonymizedBatch: ...
+    def analyze(self, texts: Sequence[str]) -> list[list[Span]]: ...  # spans, not replaced
     @property
     def detectors(self) -> tuple[Detector, ...]: ...   # in run order, the literal one first
 
@@ -117,7 +119,13 @@ class BatchStats:                       # for metrics: counts and timings, never
 ```
 
 `entities_by_type_and_source` counts every replaced occurrence by its entity's type and the
-detector that found it, `"propagation"` for propagated ones. The mapping and its entities
+detector that found it, `"propagation"` for propagated ones.
+
+`analyze` returns, for each text, the spans `pseudonymize` replaces, sorted by `start`, without
+replacing them. Each span keeps its detector's score, source and priority but carries the type
+of the entity it is replaced as (that of the entity's first occurrence); propagated spans have
+source `"propagation"`. Both methods are views of one private analysis (detection, placeholder
+assignment, propagation), so they cannot disagree. The evaluation harness uses `analyze`. The mapping and its entities
 cannot be pickled or copied, and their state cannot be read (security invariant 3).
 
 Processing the request as one batch is what makes consistency and determinism possible: the

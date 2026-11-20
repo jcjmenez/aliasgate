@@ -39,6 +39,14 @@ DEFAULT_RULE_TYPES: Final[frozenset[str]] = frozenset(
 _RULE_TYPES: Final = DEFAULT_RULE_TYPES | {URL}
 _SOURCE: Final = "rules"
 _PHONE_SCORE: Final = 0.9
+_ISBN_LENGTH: Final = 13
+_ISBN_PREFIXES: Final = ("978", "979")
+_INTERNATIONAL_SOURCES: Final = frozenset(
+    {
+        phonenumbers.CountryCodeSource.FROM_NUMBER_WITH_PLUS_SIGN,
+        phonenumbers.CountryCodeSource.FROM_NUMBER_WITH_IDD,
+    }
+)
 _SECRET_SCORE: Final = 1.0
 
 
@@ -59,6 +67,15 @@ def _ipv6_valid(candidate: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _card_valid(candidate: str) -> bool:
+    """Luhn-valid, and not 13 digits starting with 978 or 979: that is an ISBN-13 (the EAN
+    "Bookland" prefix), and no card network issues 13-digit numbers with that prefix."""
+    digits = candidate.replace(" ", "").replace("-", "")
+    if len(digits) == _ISBN_LENGTH and digits.startswith(_ISBN_PREFIXES):
+        return False
+    return luhn_valid(candidate)
 
 
 def _drop_last_group(separators: str, min_length: int) -> Callable[[str], str | None]:
@@ -96,8 +113,10 @@ _RULES: Final[tuple[_Rule, ...]] = (
     _Rule(
         IBAN,
         re.compile(
-            r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){2,7}(?:[ ]?[A-Z0-9]{1,3})?"
-            r"(?![A-Za-z0-9])"
+            # Any letter case: people write IBANs in lower case too, and the checksum still
+            # filters out words that happen to have the shape.
+            r"(?<![A-Za-z0-9])[A-Za-z]{2}\d{2}(?:[ ]?[A-Za-z0-9]{4}){2,7}"
+            r"(?:[ ]?[A-Za-z0-9]{1,3})?(?![A-Za-z0-9])"
         ),
         1.0,
         iban_valid,
@@ -107,7 +126,7 @@ _RULES: Final[tuple[_Rule, ...]] = (
         CREDIT_CARD,
         re.compile(r"(?<![\d-])\d(?:[ -]?\d){12,18}(?![\d-])"),
         1.0,
-        luhn_valid,
+        _card_valid,
         _drop_last_group(" -", min_length=13),
     ),
     _Rule(
@@ -270,13 +289,30 @@ class RuleDetector:
         return spans
 
     def _phone_offsets(self, text: str) -> list[tuple[int, int]]:
+        """Numbers written with an international prefix (+ or the region's IDD) need only be
+        valid; national numbers must also be grouped as their country writes them, so that
+        digit groups such as "2013-015180" in an order code are not taken for a phone."""
         offsets: dict[tuple[int, int], None] = {}
         for region in self._phone_regions:
-            # The library gives up silently after max_tries invalid candidates (65535 by
-            # default), which would leave later numbers in a long text undetected.
-            matcher = phonenumbers.PhoneNumberMatcher(
-                text, region, leniency=phonenumbers.Leniency.VALID, max_tries=sys.maxsize
-            )
-            for match in matcher:
+            for match in _phone_matches(text, region, phonenumbers.Leniency.STRICT_GROUPING):
                 offsets[(match.start, match.end)] = None
-        return list(offsets)
+            for match in _phone_matches(text, region, phonenumbers.Leniency.VALID):
+                if _has_international_prefix(match.raw_string, region):
+                    offsets[(match.start, match.end)] = None
+        return sorted(offsets)
+
+
+def _phone_matches(
+    text: str, region: str, leniency: int
+) -> Iterator[phonenumbers.PhoneNumberMatch]:
+    # The library gives up silently after max_tries invalid candidates (65535 by default),
+    # which would leave later numbers in a long text undetected.
+    return iter(
+        phonenumbers.PhoneNumberMatcher(text, region, leniency=leniency, max_tries=sys.maxsize)
+    )
+
+
+def _has_international_prefix(raw: str, region: str) -> bool:
+    # The matcher clears the country code source of the numbers it returns, so parse again.
+    number = phonenumbers.parse(raw, region, keep_raw_input=True)
+    return number.country_code_source in _INTERNATIONAL_SOURCES

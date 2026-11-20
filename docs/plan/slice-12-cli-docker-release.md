@@ -153,7 +153,10 @@ the tag or publish yourself; the maintainer does that.**
   model cached takes about 7 s, and 200 words take about 140 ms. Detection runs one inference
   at a time per process.)
 - A deployment checklist that ends with: run the evaluation on your own samples and review the
-  threat model with your DPO.
+  threat model with your DPO. (Found in slice 11: the command is
+  `python -m aliasgate.eval --config <file> <corpus.jsonl>...`, documented in
+  `docs/evaluation.md`, including how to handle real samples. `aliasgate.eval` ships in the
+  wheel; the synthetic corpora and `tools/generate_corpus.py` do not.)
 
 `CHANGELOG.md` in Keep a Changelog format with the 0.1.0 entry.
 
