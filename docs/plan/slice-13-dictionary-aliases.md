@@ -66,10 +66,15 @@ Slice 12 (v0.1.0 released). Every earlier slice is merged.
   - A first try stopped at `max_tokens`, after 68 thinking tokens, in the middle of
     `[PROJECT_`. That fragment is not a placeholder, so it reached the client unchanged and was
     not counted as unresolved.
-  - Both requests to Azure OpenAI `gpt-4.1` failed at the TLS handshake, before they reached
-    the API. This is a known problem of the test machine. The gateway answered 502, so the
-    OpenAI route is not checked against a real model here.
-  - The gateway logs held counts only. The total spend was USD 0.003.
+  - The first two requests to Azure OpenAI `gpt-4.1` failed at the TLS handshake, before they
+    reached the API. This is a known problem of the test machine, and the gateway answered
+    502. Later the same day, after slice 13 was merged, a free models call showed that the
+    handshake worked again. The streamed request was then repeated through the merged code.
+    `gpt-4.1` answered with all four placeholders as given. Each placeholder arrived split
+    across five or six stream chunks (`[`, `ORG`, `_`, `1`, `_B`, `]`). The client read `ACME
+    Corporation signed the Project Falcon contract on Monday. On Friday, ACME requested to move
+    Falcon to March.`
+  - The gateway logs held counts only. The total spend for both routes was about USD 0.004.
 
 ## Dependencies to add
 
