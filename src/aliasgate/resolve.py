@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from aliasgate.types import Span
 
 
-def _resolution_order(span: Span) -> tuple[int, float, int, int, str, str]:
+def _resolution_order(span: Span) -> tuple[int, float, int, int, str, str, str]:
     # Architecture §3.3, step 2. The trailing keys only make the order total.
     return (
         -span.priority,
@@ -15,6 +15,7 @@ def _resolution_order(span: Span) -> tuple[int, float, int, int, str, str]:
         span.start,
         span.entity_type,
         span.source,
+        span.link or "",
     )
 
 

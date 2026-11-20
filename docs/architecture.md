@@ -34,10 +34,12 @@ keeps it usable as a library and as a plugin for other gateways.
 | Term | Meaning |
 |---|---|
 | **Entity type** | Upper-case label matching `[A-Z][A-Z_]*` (letters and underscores, no digits). Built-in: `PERSON`, `ORG`, `ADDRESS`, `EMAIL`, `PHONE`, `IBAN`, `CREDIT_CARD`, `NATIONAL_ID`, `TAX_ID`, `IP_ADDRESS`, `URL`, `SECRET`, `LITERAL`. Users may add their own. |
-| **Span** | A detected range in one text: `start`, `end` (Python slice offsets), `entity_type`, `score` (0–1), `source` (detector name), `priority` (integer). |
+| **Span** | A detected range in one text: `start`, `end` (Python slice offsets), `entity_type`, `score` (0–1), `source` (detector name), `priority` (integer), and an optional `link`. |
 | **Surface** | The exact substring a span covers. |
 | **Key** | The normalised surface used to decide that two surfaces are the same entity (section 4.2). |
-| **Placeholder** | The replacement text, `[TYPE_N]`, with `N` starting at 1 per type. |
+| **Link** | An opaque id a detector puts on spans whose different surfaces name one entity, such as a dictionary term and its aliases (`dictionary:7`). It never contains text. |
+| **Variant** | One surface of a link group after the first, marked by a letter from `B` to `Z` in its placeholder (`[ORG_1_B]`). |
+| **Placeholder** | The replacement text, `[TYPE_N]` or `[TYPE_N_V]`, with `N` starting at 1 per type and `V` the variant letter. |
 | **Mapping** | The per-request table placeholder ↔ canonical surface. |
 | **Slot** | One string inside a JSON payload that the gateway processes, with a way to read and write it. |
 
@@ -55,12 +57,30 @@ Detectors are synchronous, pure and stateless with respect to the text (the same
 same output). They may be slow (the ML one is), so the proxy runs detection in a worker thread.
 A detector that fails raises; it never returns a partial result silently.
 
+```python
+@dataclass(frozen=True, slots=True)
+class Span:
+    start: int
+    end: int
+    entity_type: str
+    score: float
+    source: str
+    priority: int
+    link: str | None = None
+```
+
+`link` groups the spans of different surfaces that name one entity (section 4.2). It is chosen
+by the detector: the detector's name, a colon and a decimal number, as in `dictionary:7`. It must
+match `[a-z][a-z0-9_]*:[0-9]{1,9}`, or construction raises `ValueError` without repeating the
+value, so a link cannot carry text. Only the dictionary sets links, and only for entries with
+aliases. Rule, ML and literal spans have none. The detection cache stores spans with their link.
+
 ### 3.2 Layers and priorities
 
 | Priority | Layer | Module | Source of truth |
 |---|---|---|---|
 | 100 | Placeholder literals | `detectors/literal.py` | Text that already looks like a placeholder (section 4.4) |
-| 80 | Company dictionary | `detectors/dictionary.py` | User-provided terms |
+| 80 | Company dictionary | `detectors/dictionary.py` | User-provided terms and their aliases |
 | 60 | Rules | `detectors/rules.py` | Regex plus checksum or library validation |
 | 40 | ML | `detectors/gliner.py` | Local NER model, optional extra |
 | 20 | Propagation | inside `engine.py` | Values already detected elsewhere in the same request |
@@ -81,8 +101,9 @@ Input: all spans for one text. Output: a list of non-overlapping spans sorted by
 
 1. Drop spans where `start >= end`.
 2. Sort by `priority` descending, then `score` descending, then length descending, then `start`
-   ascending, then `entity_type` ascending, then `source` ascending (the last two keys only make
-   the order total, so the result does not depend on the order of the input).
+   ascending, then `entity_type` ascending, then `source` ascending, then `link` ascending, no
+   link first (the last three keys only make the order total, so the result does not depend on
+   the order of the input).
 3. Walk the sorted list; accept a span if it does not overlap any accepted span. Two spans
    overlap when `a.start < b.end and b.start < a.end`.
 4. Return accepted spans sorted by `start`.
@@ -143,6 +164,45 @@ and the canonical surface are those of the **first** occurrence in batch order. 
 "ACME" and "Acme" both occur, both become `[ORG_1]` and both are restored as the first form
 seen. This loss of case variation is accepted and documented.
 
+**Link groups.** Surfaces with different keys can name one entity: a dictionary term and its
+aliases. Their spans carry the same link, and the mapping groups them by `(link, entity_type)`.
+Each surface of a group is still its own entity, with its own key, canonical surface and
+placeholder, but they share a number and are told apart by a variant letter:
+
+```python
+@dataclass(frozen=True, slots=True)
+class Entity:
+    key: str = field(repr=False)
+    entity_type: str
+    surface: str = field(repr=False)
+    placeholder: str
+    variant: str | None = None  # None for the first surface of a group and for unlinked entities
+
+class Mapping:
+    def assign(self, entity_type: str, surface: str, *, key: str | None = None,
+               link: str | None = None) -> Entity: ...
+    def lookup(self, entity_type: str, number: int,
+               variant: str | None = None) -> str | None: ...
+```
+
+`assign` decides in this order:
+
+1. **Known key.** The key already has an entity: return it unchanged, whatever `link` and
+   `entity_type` are. The entity does not join the link's group.
+2. **No link.** Create an entity with the next number for the type and no variant.
+3. **New group.** The group `(link, entity_type)` has no entity yet: create an entity with the
+   next number and no variant, and record the number for the group.
+4. **Known group.** The group has used fewer than 25 variants: create an entity with the
+   group's number and the next unused letter of `B` to `Z`.
+5. **Full group.** The group has used all 25 letters: create an entity with the next number and
+   no variant, outside the group. Nothing leaks; the surface is only not linked.
+
+A link never joins entities of different types. `lookup` without a variant returns the surface
+of the entity that has no letter, and with a variant the surface of that variant; both return
+None when the placeholder is not in the mapping. `entities()` and `len()` include variants,
+because every placeholder is one entity. Link ids are kept only as keys of the mapping's group
+table and appear in no repr.
+
 ### 4.3 Algorithm
 
 Given `texts[0..n)`:
@@ -152,8 +212,10 @@ Given `texts[0..n)`:
 2. **Collect entities and assign placeholders.** Walk the texts in order and the resolved spans
    by `start`. For each span compute the key; the first time a key is seen, record the entity
    `(key, entity_type, surface)` and assign it `[TYPE_N]`, where `N` is the next unused number
-   for that type. Numbering therefore follows the order of first **detection**, and propagation
-   (next step) never influences it.
+   for that type, or, for a span with a link, the placeholder the link's group gives it
+   (section 4.2). Numbering and variant letters therefore follow the order of first
+   **detection**, and propagation (next step) never influences them. `LITERAL` spans keep their
+   exact key and ignore links.
 3. **Propagate** (if enabled). For each recorded entity whose key length is at least
    `min_propagation_length`, build a pattern from its canonical surface with
    `build_term_pattern` (`terms.py`): split the surface on whitespace, `re.escape` each token,
@@ -170,7 +232,7 @@ Determinism requirements, each covered by a property test:
 - Calling `pseudonymize` twice with the same texts and the same detectors returns identical
   output.
 - **Append stability.** For batches `A` and `A + B`, every entity in the mapping of `A` has the
-  same placeholder and canonical surface in the mapping of `A + B`. With propagation disabled,
+  same placeholder, variant and canonical surface in the mapping of `A + B`. With propagation disabled,
   the pseudonymised texts of `A` are also identical. (With propagation enabled, a text of `A`
   can change only by having more values replaced, when `B` reveals an entity that `A` contained
   undetected.) This keeps provider prompt caches valid across the turns of a conversation.
@@ -199,9 +261,17 @@ cache stores spans, never text, and lives in process memory only.
 ### 5.1 Canonical format (`placeholders.py`)
 
 `[TYPE_N]`: an opening square bracket, the entity type, an underscore, a positive decimal number
-without leading zeros, a closing square bracket. ASCII only. Maximum length is bounded:
-`MAX_PLACEHOLDER_LENGTH = 64`; entity types longer than 40 characters are rejected at
-configuration time.
+without leading zeros, a closing square bracket. A variant (section 4.2) adds an underscore and
+one upper-case letter from `B` to `Z` before the closing bracket: `[ORG_1_B]`. ASCII only.
+Maximum length is bounded: `MAX_PLACEHOLDER_LENGTH = 64`; entity types longer than 40
+characters are rejected at configuration time. The longest placeholder with a number of nine
+digits and a variant has 54 characters.
+
+```python
+VARIANT_LETTERS = "BCDEFGHIJKLMNOPQRSTUVWXYZ"
+def format_placeholder(entity_type: str, number: int, variant: str | None = None) -> str: ...
+def parse_match(match: re.Match[str]) -> tuple[str, int, str | None]: ...  # type, number, variant
+```
 
 ### 5.2 Tolerant pattern
 
@@ -214,26 +284,38 @@ Models sometimes alter placeholders slightly. Restoration accepts these variants
 | Up to two spaces or tabs inside the brackets | `[ PERSON_1 ]` |
 | Markdown-escaped underscores | `[CREDIT\_CARD\_1]` |
 | Markdown-escaped brackets, **both** of them | `\[PERSON_1\]` |
+| The same forms for the variant letter | `[org_1 b]`, `[ORG\_1\_B]` |
 
 ```python
-_BODY = r"[ \t]{0,2}([A-Za-z](?:\\?_|[A-Za-z]){0,39}?)(?:\\?_| )(\d{1,9})[ \t]{0,2}"
+_BODY = (
+    r"[ \t]{0,2}([A-Za-z](?:\\?_|[A-Za-z]){0,39}?)(?:\\?_| )(\d{1,9})"
+    r"(?:(?:\\?_| )([A-Za-z]))?[ \t]{0,2}"
+)
 TOLERANT = re.compile(rf"\\\[{_BODY}\\\]|\[{_BODY}\]")
 MAX_TOLERANT_LENGTH = 128   # no match of TOLERANT can be longer than this
 ```
 
-The pattern has two alternatives (escaped brackets, plain brackets), so the type and number are
-in groups 1–2 or 3–4. A backslash before the opening bracket is consumed only when the closing
+The pattern has two alternatives (escaped brackets, plain brackets), so the type, number and
+variant are in groups 1–3 or 4–6. The variant is optional and accepts an underscore, a
+Markdown-escaped underscore or one space before it, and either case. It accepts every letter,
+`A` included: `[ORG_1_A]` is then found and counted as unresolved, where an unmatched form would
+pass unseen. Every match of the pattern without a variant is still a match, at the same offsets.
+The pattern also finds bracketed text that ends in a separator and one letter after a number,
+such as `[Step 1 a]`; in a request that text becomes a `LITERAL` like any other
+placeholder-shaped text. The longest match is 101 characters. A backslash before the opening bracket is consumed only when the closing
 bracket is escaped too. This matters: the input `\Alice` becomes `\[PERSON_1]`, and restoring it
 must give back `\Alice`, not `Alice`. Every quantifier is bounded so that a match can never
 exceed `MAX_TOLERANT_LENGTH`; the stream restorer relies on that bound.
 
-A match is restored only if `(type, number)` exists in the mapping, where the type is the
-matched text with backslashes removed and upper-cased. Any other match is left exactly as it is
-and counted as an *unresolved placeholder* (a metric, section 8).
+A match is restored only if `(type, number, variant)` exists in the mapping, where the type is
+the matched text with backslashes removed and upper-cased, and the variant is upper-cased. Any
+other match, an unknown variant of a known number such as `[ORG_1_F]` included, is left exactly
+as it is and counted as an *unresolved placeholder* (a metric, section 8).
 
 This pattern and the hold-back algorithm of §5.4 were prototyped and checked with 200,000 random
-chunked inputs before this document was written. Do not "simplify" either without re-running
-the property test.
+chunked inputs before this document was written, and the any-chunking property was run again
+with 20,000 examples when the variant was added (slice 13). Do not "simplify" either without
+re-running the property test.
 
 ### 5.3 `restore`
 
@@ -247,7 +329,8 @@ that is itself the inside of a JSON document (tool-call arguments).
 
 Round-trip property: for any texts, restoring the pseudonymised texts yields the original texts,
 except that case and whitespace variants of the same entity are rendered as its canonical
-surface.
+surface. Each surface of a link group is its own entity, so a dictionary term and its aliases
+are each restored as written.
 
 ### 5.4 Streaming (`stream.py`)
 
@@ -420,7 +503,8 @@ detector names and entity types from the configuration. None is taken from a req
 leak audit), `upstream_error` (the provider answered an error, failed or timed out) or
 `gateway_error` (the gateway failed). `rejections_total` counts every error response the
 gateway produced itself, by its error code. Every response carries `x-aliasgate-entities`,
-the number of entities in the request's mapping (0 when nothing was pseudonymised).
+the number of entities in the request's mapping, which is the number of distinct placeholders,
+variants included (0 when nothing was pseudonymised).
 
 ## 9. Configuration
 
@@ -439,6 +523,7 @@ base URLs may carry a base path (§7).
 | Numbered placeholders by first appearance | HMAC-derived ids | Shorter, readable for the model, no key to manage. HMAC ids become useful with a vault (backlog). |
 | Typed placeholders | Realistic surrogates | Safe, auditable reversal. Surrogates opt-in later. |
 | ASCII `[TYPE_N]` | `<TYPE_N>`, `{{TYPE_N}}`, `⟦TYPE_N⟧` | Angle brackets are stripped by HTML renderers, braces collide with templates, non-ASCII brackets tokenise badly and get normalised by models. |
+| Variant placeholders for linked surfaces (`[ORG_1]`, `[ORG_1_B]`), letters by first appearance | One placeholder per entity, restored as its first surface; `[ORG_1B]`; one fixed letter per alias | Each surface restores to itself, so the round trip stays lossless and tool arguments keep the user's wording. `[ORG_1B]` reads as another number. Fixed letters would reveal how many aliases the dictionary holds and break the first-appearance rule. |
 | Python | Go or Rust | The detection ecosystem (GLiNER, Presidio, transformers) is Python. Detection dominates latency, not the proxy. |
 | Starlette + httpx | LiteLLM plugin only | Independent correctness; adapter possible later. |
 | Reject unknown endpoints and uninspectable content | Forward unchanged | Fail closed is the only safe default for this product. |

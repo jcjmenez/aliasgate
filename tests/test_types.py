@@ -119,6 +119,37 @@ def test_span_error_message_does_not_contain_the_entity_type_value() -> None:
     assert "Juan" not in str(excinfo.value)
 
 
+def test_link_defaults_to_none() -> None:
+    assert _span().link is None
+
+
+@pytest.mark.parametrize("link", ["dictionary:7", "dictionary:1", "a:0", "my_detector2:123456789"])
+def test_a_link_of_a_detector_name_a_colon_and_a_number_is_accepted(link: str) -> None:
+    assert _span(link=link).link == link
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "Dictionary:7",
+        "dictionary",
+        "dictionary:",
+        "dictionary:x",
+        "dictionary:7 ",
+        "dictionary:7\n",
+        "dictionary:1234567890",
+        ":7",
+        "ACME Corporation",
+        "",
+    ],
+)
+def test_a_link_in_any_other_form_is_rejected_without_repeating_it(link: str) -> None:
+    with pytest.raises(ValueError, match="link") as excinfo:
+        _span(link=link)
+    if link.strip():
+        assert link.strip() not in str(excinfo.value)
+
+
 @pytest.mark.parametrize("name", ["PERSON", "CREDIT_CARD", "A", "A" * MAX_ENTITY_TYPE_LENGTH])
 def test_validate_entity_type_accepts_upper_case_names(name: str) -> None:
     assert validate_entity_type(name) == name

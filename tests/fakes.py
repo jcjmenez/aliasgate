@@ -7,7 +7,10 @@ from aliasgate.types import PRIORITY_ML, Span
 
 
 class WordListDetector:
-    """Test detector: reports every whole-word, case-sensitive occurrence of the given words."""
+    """Test detector: reports every whole-word, case-sensitive occurrence of the given words.
+
+    `links` maps some of the words to a link, which their spans carry.
+    """
 
     def __init__(
         self,
@@ -16,10 +19,12 @@ class WordListDetector:
         name: str = "fake",
         priority: int = PRIORITY_ML,
         score: float = 0.9,
+        links: Mapping[str, str] | None = None,
     ) -> None:
         self.name = name
+        links = links or {}
         self._patterns = tuple(
-            (re.compile(rf"(?<!\w){re.escape(word)}(?!\w)"), entity_type)
+            (re.compile(rf"(?<!\w){re.escape(word)}(?!\w)"), entity_type, links.get(word))
             for word, entity_type in words.items()
         )
         self._priority = priority
@@ -27,8 +32,16 @@ class WordListDetector:
 
     def detect(self, text: str) -> list[Span]:
         return [
-            Span(match.start(), match.end(), entity_type, self._score, self.name, self._priority)
-            for pattern, entity_type in self._patterns
+            Span(
+                match.start(),
+                match.end(),
+                entity_type,
+                self._score,
+                self.name,
+                self._priority,
+                link,
+            )
+            for pattern, entity_type, link in self._patterns
             for match in pattern.finditer(text)
         ]
 

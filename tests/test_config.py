@@ -690,6 +690,71 @@ def test_invalid_dictionary_files_raise_with_the_position_not_the_term(
     assert "Globex" not in str(excinfo.value)
 
 
+def test_load_terms_reads_aliases_as_a_tuple(tmp_path: Path) -> None:
+    path = _file(
+        tmp_path,
+        "terms:\n"
+        "  - term: ACME Corporation\n    type: ORG\n    aliases: [ACME, ACME Corp.]\n"
+        "  - term: Project Falcon\n    type: PROJECT\n    aliases: []\n"
+        "  - term: Globex S.L.\n    type: ORG\n",
+    )
+    terms = load_terms(path)
+    assert terms == [
+        Term("ACME Corporation", "ORG", ("ACME", "ACME Corp.")),
+        Term("Project Falcon", "PROJECT"),
+        Term("Globex S.L.", "ORG"),
+    ]
+    assert [term.aliases for term in terms] == [("ACME", "ACME Corp."), (), ()]
+
+
+@pytest.mark.parametrize(
+    ("aliases", "message"),
+    [
+        ("Globex", "entry 2: 'aliases' must be a list of strings"),
+        ("null", "entry 2: 'aliases' must be a list of strings"),
+        ("{Globex: 1}", "entry 2: 'aliases' must be a list of strings"),
+        ("[Globex, 7]", "entry 2: 'aliases' must be a list of strings"),
+        ("[Globex, NO]", "entry 2: 'aliases' must be a list of strings"),
+        ("[Globex, [GSL]]", "entry 2: 'aliases' must be a list of strings"),
+        ("[Globex, '  ']", "entry 2, alias 2: the alias is empty"),
+        ("['']", "entry 2, alias 1: the alias is empty"),
+    ],
+    ids=[
+        "string",
+        "null",
+        "mapping",
+        "number-item",
+        "boolean-item",
+        "list-item",
+        "whitespace-alias",
+        "empty-alias",
+    ],
+)
+def test_invalid_aliases_raise_with_the_position_not_the_alias(
+    tmp_path: Path, aliases: str, message: str
+) -> None:
+    path = _file(
+        tmp_path,
+        "terms:\n"
+        "  - term: ACME Corporation\n    type: ORG\n"
+        f"  - term: Globex S.L.\n    type: ORG\n    aliases: {aliases}\n",
+    )
+    with pytest.raises(ValueError, match="entry 2") as excinfo:
+        load_terms(path)
+    assert str(excinfo.value) == f"dictionary file {path}, {message}"
+    for surface in ("Globex", "GSL", "ACME"):
+        assert surface not in str(excinfo.value)
+
+
+def test_an_unknown_key_names_the_three_allowed_keys(tmp_path: Path) -> None:
+    path = _file(tmp_path, "terms:\n  - term: Globex S.L.\n    type: ORG\n    alias: [Globex]\n")
+    with pytest.raises(ValueError, match="allowed") as excinfo:
+        load_terms(path)
+    assert str(excinfo.value) == (
+        f"dictionary file {path}, entry 1: only 'term', 'type' and 'aliases' are allowed"
+    )
+
+
 def test_yaml_syntax_error_reports_the_position_without_the_content(tmp_path: Path) -> None:
     path = _file(tmp_path, "terms:\n  - term: Globex S.L.\n    type: [ORG\n")
     with pytest.raises(ValueError, match="line") as excinfo:

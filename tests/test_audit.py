@@ -96,6 +96,17 @@ def test_placeholders_never_match_an_entity_named_like_their_type() -> None:
     assert audit_outbound(body, mapping, min_length=3).leaked_entities == 0
 
 
+def test_a_variants_surface_anywhere_in_the_body_is_reported_with_its_type() -> None:
+    mapping = Mapping()
+    mapping.assign("ORG", "ACME Corporation", link="dictionary:1")
+    mapping.assign("ORG", "ACME", link="dictionary:1")
+    mapping.assign("PERSON", "Juan Pérez")
+    clean = {"x": "[ORG_1] and [ORG_1_B] wrote to [PERSON_1]", "y": ["[org 1 b]"]}
+    assert audit_outbound(clean, mapping, min_length=3) == AuditResult(0, ())
+    leaked = {"x": "[ORG_1] and [ORG_1_B]", "deep": {"notes": ["paid by Acme"]}}
+    assert audit_outbound(leaked, mapping, min_length=3) == AuditResult(1, ("ORG",))
+
+
 def test_an_empty_mapping_finds_nothing() -> None:
     assert audit_outbound({"x": "Juan Pérez"}, Mapping(), min_length=3) == AuditResult(0, ())
 

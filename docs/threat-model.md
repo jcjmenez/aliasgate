@@ -42,7 +42,10 @@ These are known and not fully solved. A deployment must accept or mitigate each 
    arithmetic on a masked number, facts about a real company) degrade or fail. Amounts and dates
    are not pseudonymised by default for this reason.
 7. **Linkability within a request.** The provider can see that `[PERSON_1]` is the same person
-   throughout a conversation. That is intended, since the model needs it.
+   throughout a conversation, and that the placeholders of a dictionary term and its aliases
+   are names of one entity (`[ORG_1_B]` is another name of `[ORG_1]`). That is intended, since
+   the model needs it. Which aliases a dictionary holds is not revealed: letters follow the
+   order of appearance in the request.
 8. **Unresolved or altered placeholders.** A model may invent `[PERSON_9]` or mangle a
    placeholder beyond the tolerant pattern. The user then sees a placeholder. This is a visible
    failure, not a leak; it is counted in metrics.

@@ -35,6 +35,42 @@ Slice 12 (v0.1.0 released). Every earlier slice is merged.
    stops the start-up, and the message names entry positions, never the text. Rejected: the
    first entry wins.
 
+## Decisions made while implementing
+
+- **Links only on entries with aliases** (asked and answered on 2026-11-20). An entry without
+  aliases gives spans without a link, as in v0.1.0. This is what keeps the two compatibility
+  promises of this file: every pre-existing test passes unchanged (the dictionary tests compare
+  whole spans), and the output stays byte for byte that of v0.1.0. With a link on every entry,
+  `İvan Petrov` and `Ivan Petrov` in one batch, which the dictionary matches as one term but
+  `normalize_key` keeps apart, would change from `[PERSON_1]` and `[PERSON_2]` to `[PERSON_1]`
+  and `[PERSON_1_B]`.
+- **Conflict messages.** When two entries have the same term key and different types, the
+  v0.1.0 message is kept (`terms 1 and 3 are the same term with different entity types`),
+  whether or not they have aliases. When they have the same term key and type and neither has
+  aliases, the later one is ignored, as in v0.1.0. Any other key in two entries gives
+  `terms 1 and 3 share a term or alias`. An entry is checked on its own first (empty term,
+  type, the limit, empty or repeated aliases), then against the earlier entries.
+- **Configuration.** `aliases: null` and a list with a non-string item get the message for a
+  value that is not a list of strings. The loader rejects empty aliases with the entry position,
+  so the detector's own check only matters for terms built in code.
+- **Mapping.** `assign` builds the entity, and with it the placeholder, before it changes any
+  counter or group, so a failure leaves the mapping as it was.
+- **Manual check (2026-11-20).** One request named `ACME Corporation`, `ACME`, `Project Falcon`
+  and `Falcon`, with the last two as term and alias. It went through `aliasgate serve` and a
+  local relay that recorded what was forwarded.
+  - The provider received `[ORG_1] signed the [PROJECT_1] contract on Monday. On Friday,
+    [ORG_1_B] asked to move [PROJECT_1_B] to March.`
+  - Claude Sonnet 5.5 on Microsoft Foundry answered with all four placeholders as given,
+    variant letters included. The client read `ACME Corporation signed the Project Falcon
+    contract on Monday. On Friday, ACME asked to move Falcon to March.`
+  - A first try stopped at `max_tokens`, after 68 thinking tokens, in the middle of
+    `[PROJECT_`. That fragment is not a placeholder, so it reached the client unchanged and was
+    not counted as unresolved.
+  - Both requests to Azure OpenAI `gpt-4.1` failed at the TLS handshake, before they reached
+    the API. This is a known problem of the test machine. The gateway answered 502, so the
+    OpenAI route is not checked against a real model here.
+  - The gateway logs held counts only. The total spend was USD 0.003.
+
 ## Dependencies to add
 
 None.
@@ -202,7 +238,8 @@ MAX_ALIASES: Final = 25  # the term and its aliases get 26 distinct placeholders
 - An alias is matched exactly like a term: as a whole term, ignoring case, with any whitespace
   between its words. Terms and aliases are in the same alternation, longest first. A match of
   the term or of any alias of entry `p` (its 1-based position in `terms`) is a span with the
-  entry's type and `link=f"dictionary:{p}"`.
+  entry's type and `link=f"dictionary:{p}"`. An entry without aliases gives spans without a
+  link (see "Decisions made while implementing").
 - The construction validates the entries. Messages name positions and never terms or aliases:
   - an alias with an empty key: `term 3, alias 2: the alias is empty`;
   - an alias with the same key as its own term or as an earlier alias of the same entry:
