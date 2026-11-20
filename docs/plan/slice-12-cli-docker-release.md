@@ -165,6 +165,78 @@ the tag or publish yourself; the maintainer does that.**
 Replace the status notice with: alpha, implemented scope, link to usage. Add a five-line quick
 start. Keep the "What it does not guarantee" section unchanged.
 
+### Decisions made while implementing (slice 12)
+
+- CLI. `--config` is required by `serve`, `check` and `demo`, as specified; slice 06 had made
+  it optional for `python -m aliasgate`, which now needs a command. `tests/proxy/test_main.py`
+  was replaced by `tests/test_cli.py`. `--host` and `--port` are validated by `ListenSettings`,
+  so an invalid port is reported as `listen.port`. Loopback means `localhost` (any case) or an
+  IP loopback address; any other host warns, hostnames and bracketed IPv6 included.
+- Exit codes. 2: invalid arguments, invalid YAML (no parser message, which quotes the file),
+  validation errors (one line per field, pydantic's reason, never the input), an `ALIASGATE_*`
+  variable that does not parse, an unreadable configuration or dictionary, dictionary errors
+  (every file is checked and all problems are printed together), and a `ValueError` or
+  `RuntimeError` while building the detectors (the same term with two types across files, a
+  missing ML extra, a window the model would truncate). 1: a detector failure in `demo` (named
+  by detector), and anything else, by exception class only. A failed model download is an
+  `OSError` and lands in 1.
+- `serve` loads the dictionaries before it builds the detectors, so their problems are listed
+  per file, prints the warning before the model loads, and passes the pseudonymizer it built to
+  `create_app` (whose docstring now says so).
+- `check` prints the detectors, the dictionary term and file counts (never terms), the entity
+  types (rules, dictionaries and, with ML, the labels' types), the ML model and revision, the
+  upstreams, passthrough entries, listen address, policy, propagation and metrics.
+- `demo` treats all of standard input as one text, as one request would. Its table has, per
+  type, the entities and the replaced occurrences. `--show-mapping` prints each surface as a
+  JSON string, so whitespace inside it stays visible.
+- Torch from the CPU index, decided with the maintainer. PyPI's Linux torch wheels pull in
+  CUDA 13 (about 2.4 GB of wheels, 6 GB installed). `torch>=2.15.0` is now listed in the `ml`
+  extra, and `tool.uv.sources` takes it from `https://download.pytorch.org/whl/cpu` on Linux
+  (`explicit = true`, so only torch comes from there). The lock lost the CUDA packages and
+  gained `torch 2.15.0+cpu` with its hashes. `pip install 'aliasgate[ml]'` still gets PyPI's
+  torch, because uv sources are not part of the wheel's metadata.
+- Dockerfile. uv 0.11.26 is copied from its official image into a build stage on the same
+  `python:3.13-slim` digest as the final stage, so the virtual environment's interpreter path
+  is valid in both. Dependencies are installed from the lock in their own layer, then the
+  project with `--no-editable`. The ML image downloads the model with `load_gliner`, then
+  proves with `HF_HUB_OFFLINE=1` that `build_pseudonymizer` (warm-up included) works from the
+  cache alone. huggingface_hub writes some cache files as 0600, so the cache is made readable to
+  all; without that, the non-root user logged a permission error at start-up. Both images set
+  `HF_HUB_OFFLINE=1`. The health check uses `http.client`, which ignores proxy variables.
+- Release workflow. `ci.yml` gained `workflow_call`, and the release calls it first. The tag
+  must equal `v` plus the package version. Order: CI, build, PyPI, images, GitHub release.
+  Third-party actions are pinned by commit. GHCR and `gh release` use the job's own
+  `github.token`; nothing is stored. Images are built for `linux/amd64` and `linux/arm64` with
+  QEMU, decided with the maintainer. The changelog section stops at the next heading or at the
+  link definitions.
+- Tests beyond the list: the documented error-code table (code, status, outcome) and both
+  metrics tables are compared with the code; the Dockerfile (digests, non-root user, no
+  configuration), `.dockerignore`, the release workflow (no secret, OIDC on the PyPI job only,
+  pinned actions) and the compose example are checked statically, and the example clients
+  compile.
+- Example clients print the restored answers, `x-aliasgate-entities` and token usage. The
+  OpenAI one needs `OPENAI_MODEL`; the Anthropic one defaults to `claude-opus-5-5` with effort
+  `low`. Both cap `max_tokens` at 300.
+- Manual checks, 2026-11-20, Apple M5 Pro, Docker 29.8.2 (arm64). Both images build. The core
+  image is 214 MB uncompressed (57 MB compressed), the ML image 2.36 GB (1.1 GB of it the
+  model). Both start with the configuration mounted read-only, `--read-only`, `--tmpfs /tmp`,
+  `--cap-drop ALL` and `no-new-privileges`, answer `/healthz`, report `healthy`, and run as
+  uid 10001. The ML image starts with `--network none` in 8 s and uses 1.7 GiB; `demo` inside
+  it found a person name. The compose example starts and rejects an image part with 422. The
+  wheel, installed with pip in a fresh environment, followed `docs/usage.md` as written.
+- Real providers, 2026-11-20, through the wheel's `aliasgate serve`: `examples/openai_client.py`
+  (openai 3.57.0) against Azure OpenAI gpt-4.1 with `base_url: https://<resource>.openai.azure.com/openai`,
+  the key sent as `Authorization: Bearer` by the SDK, and `examples/anthropic_client.py`
+  (anthropic 2.11.0) against Claude Sonnet 5.5 in Microsoft Foundry. Both answered, whole and
+  streamed, with the email, company and IBAN restored; the gateway logs held none of them. Four
+  billed calls: 102 input and 125 output tokens on gpt-4.1, 152 and 268 on Claude, about
+  USD 0.004. Two attempts hit the known intermittent TLS failure to Azure, were answered
+  `502 upstream_unreachable` without reaching the provider, and the SDK retried them.
+- Found, not fixed: transformers 5.22.2 warns at model load that the mdeberta tokenizer has an
+  "incorrect regex pattern" (`fix_mistral_regex`); the slice 09 and 11 measurements already ran
+  with it. torch and huggingface_hub print deprecation warnings at start-up. Claude remarked on
+  the placeholders in one answer (threat model, risk 6).
+
 ## Tests
 
 `test_cli.py`

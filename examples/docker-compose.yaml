@@ -1,0 +1,27 @@
+# aliasgate with the example configuration and dictionary, on http://localhost:8080.
+#
+#   docker compose -f examples/docker-compose.yaml up
+#
+# Use your own configuration and dictionary in a directory that is not committed: they may
+# name real customers. The published port is bound to loopback; the gateway has no client
+# authentication (docs/deployment.md).
+services:
+  aliasgate:
+    image: ghcr.io/jcjmenez/aliasgate:0.1.0 # or 0.1.0-ml, with detection.ml.enabled: true
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # The command reads /etc/aliasgate/aliasgate.yaml; relative dictionary paths in it are
+      # resolved against that directory.
+      - ./aliasgate.example.yaml:/etc/aliasgate/aliasgate.yaml:ro
+      - ./dictionary.example.yaml:/etc/aliasgate/dictionary.example.yaml:ro
+    environment:
+      ALIASGATE_LOGGING__LEVEL: INFO
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped

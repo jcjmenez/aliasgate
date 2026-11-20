@@ -571,7 +571,8 @@ def create_app(
     pseudonymizer: Pseudonymizer | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> Starlette:
-    """Build the ASGI app. The optional arguments exist for tests."""
+    """Build the ASGI app. `pseudonymizer` defaults to one built from the settings;
+    `http_client` exists for tests."""
     if pseudonymizer is None:
         pseudonymizer = build_pseudonymizer(settings)
     metrics = None

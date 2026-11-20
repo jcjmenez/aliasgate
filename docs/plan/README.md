@@ -23,7 +23,7 @@ Read [AGENTS.md](../../AGENTS.md) first. Its rules apply to every slice.
 | 09 | [slice-09-ml-detector.md](slice-09-ml-detector.md) | GLiNER detector, detection cache | 04 | done |
 | 10 | [slice-10-audit-policy-metrics.md](slice-10-audit-policy-metrics.md) | Leak audit, metrics, logging invariant | 08 | done |
 | 11 | [slice-11-evaluation.md](slice-11-evaluation.md) | Evaluation harness and CI recall gate | 04 | done |
-| 12 | [slice-12-cli-docker-release.md](slice-12-cli-docker-release.md) | CLI, Docker image, usage docs, v0.1.0 | 09, 10, 11 | planned |
+| 12 | [slice-12-cli-docker-release.md](slice-12-cli-docker-release.md) | CLI, Docker image, usage docs, v0.1.0 | 09, 10, 11 | done |
 
 Slices 02 and 03 can be done in either order. Slices 09 and 11 can be done any time after 04.
 The first usable end-to-end product exists after slice 06; the first one worth deploying, after

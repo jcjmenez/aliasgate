@@ -380,7 +380,7 @@ text, a surface, or a mapping. Logs carry counts, entity types, durations, statu
 request ids. This rule has a test: a request with known synthetic values is sent through the
 proxy with DEBUG logging and the captured log output must not contain any of the values.
 
-Third-party loggers are part of the rule. `python -m aliasgate` disables uvicorn's access log,
+Third-party loggers are part of the rule. `aliasgate serve` disables uvicorn's access log,
 which would print every path and query string, and keeps the `httpx` and `httpcore` loggers at
 WARNING or above, because they log upstream URLs (with the client's query string) and headers.
 Exceptions are logged by class name only, and the JSON formatter never renders a traceback.

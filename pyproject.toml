@@ -1,6 +1,6 @@
 [project]
 name = "aliasgate"
-version = "0.0.1"
+version = "0.1.0"
 description = "Reversible pseudonymization gateway for LLM APIs: the model never sees real customer data, the user never sees placeholders."
 readme = "README.md"
 license = "Apache-2.0"
@@ -9,7 +9,7 @@ requires-python = ">=3.12"
 authors = [{ name = "Juan Carlos Jiménez" }]
 keywords = ["llm", "privacy", "pii", "pseudonymization", "gateway", "proxy", "gdpr"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
@@ -28,10 +28,20 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
+[project.scripts]
+aliasgate = "aliasgate.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/jcjmenez/aliasgate"
+Documentation = "https://github.com/jcjmenez/aliasgate/blob/main/docs/usage.md"
+Changelog = "https://github.com/jcjmenez/aliasgate/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 ml = [
     "gliner>=0.2.30",
     "protobuf>=7.36.2",
+    # gliner needs torch anyway; it is listed so that uv takes it from the CPU index on Linux.
+    "torch>=2.15.0",
 ]
 
 [dependency-groups]
@@ -46,6 +56,16 @@ dev = [
     "ruff>=0.6",
     "types-pyyaml>=6.0.12.20261113",
 ]
+
+[tool.uv.sources]
+# PyPI's Linux torch wheels pull in CUDA (about 6 GB installed); the detector runs on CPU.
+# This applies to uv (checkouts, the Docker image), not to `pip install 'aliasgate[ml]'`.
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [build-system]
 requires = ["hatchling"]
