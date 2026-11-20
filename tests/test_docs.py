@@ -121,6 +121,32 @@ def test_the_release_workflow_uses_trusted_publishing_and_no_stored_secret() -> 
             assert re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", uses) or not uses, (name, uses)
 
 
+def _needs(job: dict[str, object]) -> set[str]:
+    needs = job.get("needs", [])
+    if isinstance(needs, str):
+        return {needs}
+    assert isinstance(needs, list)
+    return {str(name) for name in needs}
+
+
+def test_the_release_workflow_publishes_to_pypi_only_after_the_images_are_pushed() -> None:
+    # A PyPI version cannot be uploaded twice, so every step that can still fail runs first.
+    jobs = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))[
+        "jobs"
+    ]
+    assert _needs(jobs["build"]) == {"ci"}
+    assert _needs(jobs["images"]) == {"build"}
+    assert _needs(jobs["pypi"]) == {"build", "images"}
+    assert {"images", "pypi"} <= _needs(jobs["release"])
+
+
+def test_every_readme_link_is_absolute_so_that_it_works_on_pypi() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    targets = re.findall(r"\]\(([^)]+)\)", readme)
+    assert targets
+    assert [target for target in targets if not target.startswith("https://")] == []
+
+
 def test_the_ci_workflow_can_be_called_by_the_release_workflow() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     # PyYAML reads the key `on` as the boolean True.

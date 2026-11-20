@@ -1,7 +1,7 @@
 # aliasgate
 
 [![CI](https://github.com/jcjmenez/aliasgate/actions/workflows/ci.yml/badge.svg)](https://github.com/jcjmenez/aliasgate/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/jcjmenez/aliasgate/blob/main/LICENSE)
 
 A self-hosted gateway that sits between your users and an LLM API. It replaces customer data
 with placeholders before the request leaves your network and puts the real values back in the
@@ -20,7 +20,7 @@ answer. **The model never sees real data. The user never sees placeholders.**
 > **Status: alpha (0.1.0).** The gateway pseudonymises OpenAI Chat Completions and Anthropic
 > Messages requests, streaming and tool calls included, with rules, company dictionaries and an
 > optional local ML model, and restores the answers. It has not run in production yet. Start
-> with the [usage guide](docs/usage.md).
+> with the [usage guide](https://github.com/jcjmenez/aliasgate/blob/main/docs/usage.md).
 
 ## Quick start
 
@@ -34,7 +34,7 @@ export OPENAI_BASE_URL=http://localhost:8080/v1 ANTHROPIC_BASE_URL=http://localh
 
 `serve` keeps running. In another shell, the last line points OpenAI and Anthropic clients at
 the gateway, which forwards their usual API key. Dictionaries for your customers' names, the ML model, Docker images, Azure
-OpenAI, Claude in Microsoft Foundry and tuning are in [docs/usage.md](docs/usage.md).
+OpenAI, Claude in Microsoft Foundry and tuning are in [docs/usage.md](https://github.com/jcjmenez/aliasgate/blob/main/docs/usage.md).
 
 ## Why
 
@@ -65,21 +65,21 @@ changes.
 No detector finds everything, and text without any name can still identify a person through
 context. aliasgate greatly reduces the personal and confidential data that reaches a provider.
 It does not make data anonymous and it does not, by itself, make a deployment compliant with any
-regulation. Read the [threat model](docs/threat-model.md) before relying on it.
+regulation. Read the [threat model](https://github.com/jcjmenez/aliasgate/blob/main/docs/threat-model.md) before relying on it.
 
 ## Documentation
 
 | Document | Content |
 |---|---|
-| [docs/usage.md](docs/usage.md) | Install, configure, point clients at the gateway, tune detection, error codes, metrics |
-| [docs/deployment.md](docs/deployment.md) | Network placement, container, sizing, monitoring, deployment checklist |
-| [docs/evaluation.md](docs/evaluation.md) | Measuring detection on your own samples |
-| [CHANGELOG.md](CHANGELOG.md) | Changes by version |
-| [docs/state-of-the-art.md](docs/state-of-the-art.md) | Existing tools, detection models, research evidence, legal context, feasibility |
-| [docs/architecture.md](docs/architecture.md) | Components, algorithms, data flow, decisions |
-| [docs/threat-model.md](docs/threat-model.md) | What is protected, from whom, and the residual risks |
-| [docs/plan/README.md](docs/plan/README.md) | Implementation plan in vertical slices |
-| [AGENTS.md](AGENTS.md) | Working rules for coding agents and human contributors |
+| [docs/usage.md](https://github.com/jcjmenez/aliasgate/blob/main/docs/usage.md) | Install, configure, point clients at the gateway, tune detection, error codes, metrics |
+| [docs/deployment.md](https://github.com/jcjmenez/aliasgate/blob/main/docs/deployment.md) | Network placement, container, sizing, monitoring, deployment checklist |
+| [docs/evaluation.md](https://github.com/jcjmenez/aliasgate/blob/main/docs/evaluation.md) | Measuring detection on your own samples |
+| [CHANGELOG.md](https://github.com/jcjmenez/aliasgate/blob/main/CHANGELOG.md) | Changes by version |
+| [docs/state-of-the-art.md](https://github.com/jcjmenez/aliasgate/blob/main/docs/state-of-the-art.md) | Existing tools, detection models, research evidence, legal context, feasibility |
+| [docs/architecture.md](https://github.com/jcjmenez/aliasgate/blob/main/docs/architecture.md) | Components, algorithms, data flow, decisions |
+| [docs/threat-model.md](https://github.com/jcjmenez/aliasgate/blob/main/docs/threat-model.md) | What is protected, from whom, and the residual risks |
+| [docs/plan/README.md](https://github.com/jcjmenez/aliasgate/blob/main/docs/plan/README.md) | Implementation plan in vertical slices |
+| [AGENTS.md](https://github.com/jcjmenez/aliasgate/blob/main/AGENTS.md) | Working rules for coding agents and human contributors |
 
 ## Roadmap
 
@@ -111,8 +111,8 @@ uv sync
 uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest --cov -m "not ml"
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](https://github.com/jcjmenez/aliasgate/blob/main/CONTRIBUTING.md).
 
 ## License
 
-[Apache-2.0](LICENSE).
+[Apache-2.0](https://github.com/jcjmenez/aliasgate/blob/main/LICENSE).
