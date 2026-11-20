@@ -3,17 +3,22 @@
 Not yet cut into slices. Each item needs its own slice file, written to the format in
 [README.md](README.md), before anyone implements it. Ordered by expected value.
 
-## 1. Entity linking (aliases)
+## 1. Entity linking (names of people)
 
 **Problem.** "Juan Pérez", "Mr. Pérez" and "Juan" get three placeholders, so the model treats
-them as three people. Dictionary aliases ("ACME" for "ACME Corporation") have the same problem.
+them as three people.
 
-**Direction.** Let a span carry an explicit entity key so several surfaces share one entity, and
-make the placeholder encode the variant so restoration stays lossless, for example `[PERSON_1]`
-for the full name and `[PERSON_1_B]` for the second surface. Start with explicit dictionary
-aliases (deterministic), then token-subset linking for `PERSON` (a single token that equals the
-first or last token of exactly one known person). Needs an evaluation set for wrong merges,
-which are worse than missed merges.
+**Done so far.** Dictionary aliases are cut into
+[slice 13](slice-13-dictionary-aliases.md). That slice adds `Span.link`, link groups in the
+mapping and variant placeholders: `[ORG_1]` for the first surface seen and `[ORG_1_B]` for the
+next. Restoration stays lossless.
+
+**Direction.** Token-subset linking for `PERSON` on top of slice 13. A single token that equals
+the first or last token of exactly one person seen earlier in the batch becomes a variant of
+that person. Only earlier persons count, so append stability holds. The linking runs in the
+engine, not in a detector, because it needs the persons of the whole batch. It needs an
+evaluation set for wrong merges, which are worse than missed merges. Specify it once slice 13 is
+merged and measured, including whether models keep the variant letters.
 
 ## 2. Realistic surrogates, opt-in per entity type
 

@@ -98,6 +98,7 @@ regulation. Read the [threat model](https://github.com/jcjmenez/aliasgate/blob/m
 | 10 | Leak audit, policy, metrics | done |
 | 11 | Evaluation harness | done |
 | 12 | CLI, Docker image, first release | done |
+| 13 | Dictionary aliases (entity linking, part 1) | planned |
 
 ## Development
 

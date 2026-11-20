@@ -24,12 +24,13 @@ Read [AGENTS.md](../../AGENTS.md) first. Its rules apply to every slice.
 | 10 | [slice-10-audit-policy-metrics.md](slice-10-audit-policy-metrics.md) | Leak audit, metrics, logging invariant | 08 | done |
 | 11 | [slice-11-evaluation.md](slice-11-evaluation.md) | Evaluation harness and CI recall gate | 04 | done |
 | 12 | [slice-12-cli-docker-release.md](slice-12-cli-docker-release.md) | CLI, Docker image, usage docs, v0.1.0 | 09, 10, 11 | done |
+| 13 | [slice-13-dictionary-aliases.md](slice-13-dictionary-aliases.md) | Dictionary aliases, variant placeholders | 12 | planned |
 
 Slices 02 and 03 can be done in either order. Slices 09 and 11 can be done any time after 04.
 The first usable end-to-end product exists after slice 06; the first one worth deploying, after
 slice 10.
 
-After slice 12, see [backlog.md](backlog.md).
+Slices after 12 are cut from [backlog.md](backlog.md), one item at a time.
 
 ## Slice file format
 
