@@ -1,0 +1,10 @@
+# Only what the image build needs. Everything else stays out, in particular local
+# configurations and dictionaries, which may name real customers.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!src/
+**/__pycache__
+**/*.py[cod]

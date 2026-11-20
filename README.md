@@ -17,9 +17,24 @@ answer. **The model never sees real data. The user never sees placeholders.**
  "Dear Juan Pérez, ..." ◀──    restore               ◀──   "Dear [PERSON_1], ..."
 ```
 
-> **Status: pre-alpha.** The repository currently contains the research, the architecture and a
-> detailed implementation plan. No gateway functionality is implemented yet. See the
-> [roadmap](#roadmap).
+> **Status: alpha (0.1.0).** The gateway pseudonymises OpenAI Chat Completions and Anthropic
+> Messages requests, streaming and tool calls included, with rules, company dictionaries and an
+> optional local ML model, and restores the answers. It has not run in production yet. Start
+> with the [usage guide](docs/usage.md).
+
+## Quick start
+
+```bash
+pip install aliasgate
+echo "{}" > aliasgate.yaml   # every key is optional: rules only, port 8080 on loopback
+aliasgate check --config aliasgate.yaml
+aliasgate serve --config aliasgate.yaml
+export OPENAI_BASE_URL=http://localhost:8080/v1 ANTHROPIC_BASE_URL=http://localhost:8080
+```
+
+`serve` keeps running. In another shell, the last line points OpenAI and Anthropic clients at
+the gateway, which forwards their usual API key. Dictionaries for your customers' names, the ML model, Docker images, Azure
+OpenAI, Claude in Microsoft Foundry and tuning are in [docs/usage.md](docs/usage.md).
 
 ## Why
 
@@ -56,6 +71,10 @@ regulation. Read the [threat model](docs/threat-model.md) before relying on it.
 
 | Document | Content |
 |---|---|
+| [docs/usage.md](docs/usage.md) | Install, configure, point clients at the gateway, tune detection, error codes, metrics |
+| [docs/deployment.md](docs/deployment.md) | Network placement, container, sizing, monitoring, deployment checklist |
+| [docs/evaluation.md](docs/evaluation.md) | Measuring detection on your own samples |
+| [CHANGELOG.md](CHANGELOG.md) | Changes by version |
 | [docs/state-of-the-art.md](docs/state-of-the-art.md) | Existing tools, detection models, research evidence, legal context, feasibility |
 | [docs/architecture.md](docs/architecture.md) | Components, algorithms, data flow, decisions |
 | [docs/threat-model.md](docs/threat-model.md) | What is protected, from whom, and the residual risks |
@@ -78,7 +97,7 @@ regulation. Read the [threat model](docs/threat-model.md) before relying on it.
 | 09 | ML detector (GLiNER) | done |
 | 10 | Leak audit, policy, metrics | done |
 | 11 | Evaluation harness | done |
-| 12 | CLI, Docker image, first release | planned |
+| 12 | CLI, Docker image, first release | done |
 
 ## Development
 
