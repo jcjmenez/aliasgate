@@ -46,9 +46,9 @@ changes.
 ## Design in brief
 
 - **Four detection layers.** Rules with checksum validation (emails, IBANs, cards, national IDs,
-  phones, secrets), a company dictionary (your customers, projects, codenames), a pluggable local
-  ML model for names, organisations and addresses, and propagation of every detected value to
-  all its other occurrences.
+  phones, secrets), a company dictionary (your customers, projects, codenames and their
+  aliases), a pluggable local ML model for names, organisations and addresses, and propagation
+  of every detected value to all its other occurrences.
 - **Deterministic mapping.** Inside a request the same value always becomes the same placeholder,
   and placeholders are numbered so the model can tell entities apart.
 - **Reversible, including streams and tool calls.** Placeholders split across streamed chunks are
@@ -98,7 +98,7 @@ regulation. Read the [threat model](https://github.com/jcjmenez/aliasgate/blob/m
 | 10 | Leak audit, policy, metrics | done |
 | 11 | Evaluation harness | done |
 | 12 | CLI, Docker image, first release | done |
-| 13 | Dictionary aliases (entity linking, part 1) | planned |
+| 13 | Dictionary aliases (entity linking, part 1) | done |
 
 ## Development
 

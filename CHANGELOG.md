@@ -7,6 +7,19 @@ change the configuration or the command line.
 
 ## [Unreleased]
 
+### Added
+
+- Dictionary aliases: an entry may list other names under `aliases`. The term and its aliases
+  share one entity number and get variant placeholders in order of appearance (`[ORG_1]`,
+  `[ORG_1_B]`, ...), each restored as written. Without aliases, the output is unchanged.
+  Restoration also accepts the variant forms (`[org_1 b]`, `[ORG\_1\_B]`).
+- Library: `Span.link`, `Entity.variant`, the `link` argument of `Mapping.assign`, the `variant`
+  arguments of `Mapping.lookup` and `format_placeholder`, and `Term.aliases`.
+
+### Changed
+
+- Library: `parse_match` returns `(type, number, variant)` instead of `(type, number)`.
+
 ## [0.1.0] - 2026-11-20
 
 First release. Alpha: the gateway works end to end and its safety properties are tested, but

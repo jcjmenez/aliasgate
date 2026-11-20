@@ -28,6 +28,8 @@ SECRET: Final = "SECRET"  # noqa: S105
 LITERAL: Final = "LITERAL"
 
 _ENTITY_TYPE: Final = re.compile(r"[A-Z][A-Z_]*")
+# A detector name, a colon and a number: an id that cannot carry text from a request.
+_LINK: Final = re.compile(r"[a-z][a-z0-9_]*:[0-9]{1,9}")
 
 
 def validate_entity_type(name: str) -> str:
@@ -43,7 +45,11 @@ def validate_entity_type(name: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Span:
-    """A detected range of one text; construction guarantees valid offsets, score and type."""
+    """A detected range of one text; construction guarantees valid offsets, score, type and link.
+
+    `link` groups the spans of different surfaces that name one entity, such as a dictionary
+    term and its aliases. It is an opaque id like "dictionary:7", never text.
+    """
 
     start: int
     end: int
@@ -51,6 +57,7 @@ class Span:
     score: float
     source: str
     priority: int
+    link: str | None = None
 
     def __post_init__(self) -> None:
         if self.start < 0:
@@ -60,6 +67,11 @@ class Span:
         if not 0.0 <= self.score <= 1.0:  # also rejects NaN
             raise ValueError("span score must be between 0 and 1")
         validate_entity_type(self.entity_type)
+        if self.link is not None and _LINK.fullmatch(self.link) is None:
+            raise ValueError(
+                "span link must be a lower-case detector name, a colon and up to nine digits "
+                f"(got a string of length {len(self.link)})"
+            )
 
 
 class Detector(Protocol):

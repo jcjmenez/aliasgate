@@ -1,12 +1,14 @@
 # Example company dictionary. Every term is fictional.
 #
-# Terms are matched as whole terms, case-insensitively, with any whitespace between words.
+# Terms and aliases are matched as whole terms, case-insensitively, with any whitespace between
+# words.
 # "type" is an entity type: a built-in one (ORG, PERSON, ...) or your own, in upper case.
 # Quote terms that YAML would read as something else, such as yes, no or numbers.
 
 terms:
   - term: ACME Corporation
     type: ORG
+    aliases: [ACME]  # other names of the same entry: [ORG_1] and [ORG_1_B] in one request
   - term: Globex S.L.
     type: ORG
   - term: Project Falcon

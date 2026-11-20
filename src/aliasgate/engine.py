@@ -199,7 +199,7 @@ class Pseudonymizer:
 def _assign(mapping: Mapping, span: Span, surface: str) -> Entity:
     if span.entity_type == LITERAL:
         return mapping.assign(LITERAL, surface, key=_LITERAL_KEY_PREFIX + surface)
-    return mapping.assign(span.entity_type, surface)
+    return mapping.assign(span.entity_type, surface, link=span.link)
 
 
 def _replace(text: str, occurrences: list[_Occurrence]) -> str:
@@ -217,8 +217,8 @@ def restore(text: str, mapping: Mapping, *, json_escape: bool = False) -> str:
     """Replace every placeholder of `mapping` in `text` by its canonical surface.
 
     One left-to-right pass: restored values are not scanned again, and placeholders that are
-    not in the mapping are left exactly as they are. With `json_escape`, surfaces are inserted
-    escaped for the inside of a JSON string.
+    not in the mapping, an unknown variant of a known number included, are left exactly as they
+    are. With `json_escape`, surfaces are inserted escaped for the inside of a JSON string.
     """
 
     def replacement(match: re.Match[str]) -> str:

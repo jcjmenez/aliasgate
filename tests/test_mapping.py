@@ -9,7 +9,7 @@ from aliasgate.mapping import Entity, Mapping, normalize_key
 from aliasgate.placeholders import TOLERANT, parse_match
 
 
-def _parse(placeholder: str) -> tuple[str, int]:
+def _parse(placeholder: str) -> tuple[str, int, str | None]:
     match = TOLERANT.fullmatch(placeholder)
     assert match is not None
     return parse_match(match)
@@ -55,6 +55,7 @@ def test_assign_records_key_type_and_canonical_surface() -> None:
     assert entity == Entity(
         key="juan pérez", entity_type="PERSON", surface="  Juan   Pérez ", placeholder="[PERSON_1]"
     )
+    assert entity.variant is None
 
 
 def test_case_variant_returns_the_first_entity_and_keeps_its_surface() -> None:
@@ -151,6 +152,130 @@ def test_reprs_do_not_reveal_surfaces_or_keys() -> None:
     assert "juan.perez" not in repr(mapping.entities())
 
 
+# Link groups and variants (slice 13) ----------------------------------------------------------
+
+LINK = "dictionary:1"
+
+
+def test_linked_surfaces_share_a_number_and_get_letters_in_order() -> None:
+    mapping = Mapping()
+    first = mapping.assign("ORG", "ACME Corporation", link=LINK)
+    second = mapping.assign("ORG", "ACME", link=LINK)
+    third = mapping.assign("ORG", "ACME Corp.", link=LINK)
+    assert (first.placeholder, first.variant) == ("[ORG_1]", None)
+    assert (second.placeholder, second.variant) == ("[ORG_1_B]", "B")
+    assert (third.placeholder, third.variant) == ("[ORG_1_C]", "C")
+    assert (second.key, second.surface) == ("acme", "ACME")
+    assert mapping.entities() == (first, second, third)
+    assert len(mapping) == 3
+
+
+def test_a_case_variant_of_a_linked_surface_returns_its_entity() -> None:
+    mapping = Mapping()
+    mapping.assign("ORG", "ACME Corporation", link=LINK)
+    alias = mapping.assign("ORG", "ACME", link=LINK)
+    assert mapping.assign("ORG", "acme", link=LINK) is alias
+    assert len(mapping) == 2
+
+
+def test_the_same_link_with_another_type_starts_its_own_group() -> None:
+    mapping = Mapping()
+    org = mapping.assign("ORG", "ACME Corporation", link=LINK)
+    project = mapping.assign("PROJECT", "Project Falcon", link=LINK)
+    falcon = mapping.assign("PROJECT", "Falcon", link=LINK)
+    assert (org.placeholder, project.placeholder, falcon.placeholder) == (
+        "[ORG_1]",
+        "[PROJECT_1]",
+        "[PROJECT_1_B]",
+    )
+
+
+def test_a_known_key_keeps_its_entity_and_does_not_join_another_group() -> None:
+    mapping = Mapping()
+    globex = mapping.assign("ORG", "Globex", link="dictionary:2")
+    mapping.assign("ORG", "ACME Corporation", link=LINK)
+    assert mapping.assign("ORG", "GLOBEX", link=LINK) is globex
+    assert mapping.assign("ORG", "ACME", link=LINK).placeholder == "[ORG_2_B]"
+
+
+def test_a_known_unlinked_key_does_not_join_a_group() -> None:
+    mapping = Mapping()
+    plain = mapping.assign("ORG", "ACME")
+    assert mapping.assign("ORG", "ACME", link=LINK) is plain
+    assert mapping.assign("ORG", "ACME Corporation", link=LINK).placeholder == "[ORG_2]"
+
+
+def test_groups_and_unlinked_entities_are_numbered_in_order_of_assignment() -> None:
+    mapping = Mapping()
+    placeholders = [
+        mapping.assign("ORG", "ACME Corporation", link=LINK).placeholder,
+        mapping.assign("ORG", "ACME", link=LINK).placeholder,
+        mapping.assign("ORG", "Initech").placeholder,
+        mapping.assign("ORG", "ACME Corp.", link=LINK).placeholder,
+        mapping.assign("ORG", "Globex S.L.", link="dictionary:2").placeholder,
+    ]
+    assert placeholders == ["[ORG_1]", "[ORG_1_B]", "[ORG_2]", "[ORG_1_C]", "[ORG_3]"]
+
+
+def test_a_full_group_gives_every_later_surface_a_new_number_without_a_variant() -> None:
+    mapping = Mapping()
+    surfaces = [f"Name {index}" for index in range(29)]
+    entities = [mapping.assign("ORG", surface, link=LINK) for surface in surfaces]
+    assert [entity.placeholder for entity in entities[:26]] == ["[ORG_1]"] + [
+        f"[ORG_1_{letter}]" for letter in "BCDEFGHIJKLMNOPQRSTUVWXYZ"
+    ]
+    assert [(entity.placeholder, entity.variant) for entity in entities[26:]] == [
+        ("[ORG_2]", None),
+        ("[ORG_3]", None),
+        ("[ORG_4]", None),
+    ]
+    for entity, surface in zip(entities, surfaces, strict=True):
+        assert mapping.lookup(*_parse(entity.placeholder)) == surface
+
+
+def test_lookup_with_and_without_a_variant() -> None:
+    mapping = Mapping()
+    mapping.assign("ORG", "ACME Corporation", link=LINK)
+    mapping.assign("ORG", "ACME", link=LINK)
+    assert mapping.lookup("ORG", 1) == "ACME Corporation"
+    assert mapping.lookup("ORG", 1, None) == "ACME Corporation"
+    assert mapping.lookup("ORG", 1, "B") == "ACME"
+    assert mapping.lookup("ORG", 1, "C") is None
+    assert mapping.lookup("ORG", 1, "A") is None
+    assert mapping.lookup("ORG", 2, "B") is None
+    assert mapping.lookup("PERSON", 1, "B") is None
+
+
+def test_reprs_do_not_reveal_surfaces_keys_or_links() -> None:
+    mapping = Mapping()
+    mapping.assign("ORG", "Globex S.L.", link="dictionary:42")
+    alias = mapping.assign("ORG", "Globex", link="dictionary:42")
+    assert repr(mapping) == "Mapping(entities=2)"
+    for rendered in (repr(alias), str(alias), repr(mapping.entities())):
+        assert "globex" not in rendered.lower()
+        assert "dictionary" not in rendered
+        assert "42" not in rendered
+    assert "[ORG_1_B]" in repr(alias)
+
+
+def test_a_mapping_with_groups_cannot_be_pickled_or_copied() -> None:
+    mapping = Mapping()
+    mapping.assign("ORG", "ACME Corporation", link=LINK)
+    entity = mapping.assign("ORG", "ACME", link=LINK)
+    for target in (mapping, entity):
+        for operation in (pickle.dumps, copy.copy, copy.deepcopy):
+            with pytest.raises(TypeError, match="never serialised"):
+                operation(target)
+
+
+def test_assign_with_an_invalid_link_group_type_raises_without_changing_the_mapping() -> None:
+    mapping = Mapping()
+    with pytest.raises(ValueError, match="entity type"):
+        mapping.assign("org", "ACME", link=LINK)
+    assert len(mapping) == 0
+    assert mapping.assign("ORG", "ACME Corporation", link=LINK).placeholder == "[ORG_1]"
+
+
 def test_entity_is_immutable() -> None:
     entity = Mapping().assign("PERSON", "Alice Johnson")
     with pytest.raises(AttributeError):
@@ -159,21 +284,22 @@ def test_entity_is_immutable() -> None:
 
 _TYPES = st.sampled_from(["PERSON", "ORG", "EMAIL"])
 _SURFACES = st.text(alphabet="aAbBéÉ \uff21\uff22\t\n", max_size=5)
+_LINKS = st.sampled_from([None, None, "a:1", "a:2", "b:1"])
 
 
-@given(st.lists(st.tuples(_TYPES, _SURFACES), max_size=30))
+@given(st.lists(st.tuples(_TYPES, _SURFACES, _LINKS), max_size=40))
 def test_placeholders_are_unique_and_resolve_to_their_canonical_surface(
-    calls: list[tuple[str, str]],
+    calls: list[tuple[str, str, str | None]],
 ) -> None:
     mapping = Mapping()
     first_seen: dict[str, tuple[str, str]] = {}
-    for entity_type, surface in calls:
+    for entity_type, surface, link in calls:
         key = normalize_key(surface)
         if not key:
             with pytest.raises(ValueError, match="empty"):
-                mapping.assign(entity_type, surface)
+                mapping.assign(entity_type, surface, link=link)
             continue
-        entity = mapping.assign(entity_type, surface)
+        entity = mapping.assign(entity_type, surface, link=link)
         first_seen.setdefault(key, (entity_type, surface))
         assert (entity.key, entity.entity_type, entity.surface) == (key, *first_seen[key])
 
@@ -185,8 +311,15 @@ def test_placeholders_are_unique_and_resolve_to_their_canonical_surface(
         assert mapping.lookup(*_parse(entity.placeholder)) == entity.surface
         assert mapping.get(entity.key) is entity
 
+    for entity in entities:
+        assert _parse(entity.placeholder)[2] == entity.variant
+
     for entity_type in {entity.entity_type for entity in entities}:
-        numbers = [_parse(e.placeholder)[1] for e in entities if e.entity_type == entity_type]
+        numbers = [
+            _parse(e.placeholder)[1]
+            for e in entities
+            if e.entity_type == entity_type and e.variant is None
+        ]
         assert numbers == list(range(1, len(numbers) + 1))
 
 

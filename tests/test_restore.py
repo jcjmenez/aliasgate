@@ -81,3 +81,34 @@ def test_restored_values_are_not_scanned_again() -> None:
 def test_a_surface_that_looks_like_a_placeholder_is_inserted_once() -> None:
     mapping = _mapping(("PERSON", "[PERSON_1]"))
     assert restore("[PERSON_1] [PERSON_1]", mapping) == "[PERSON_1] [PERSON_1]"
+
+
+def _linked_mapping() -> Mapping:
+    mapping = Mapping()
+    mapping.assign("ORG", "ACME Corporation", link="dictionary:1")
+    mapping.assign("ORG", 'ACME "the company"', link="dictionary:1")
+    return mapping
+
+
+@pytest.mark.parametrize(
+    "variant", ["[ORG_1_B]", "[org_1_b]", "[ORG 1 B]", "\\[ORG_1_B\\]", "[ ORG\\_1\\_b ]"]
+)
+def test_variant_placeholders_are_restored(variant: str) -> None:
+    mapping = _linked_mapping()
+    assert restore(f"Dear {variant}, of [ORG_1]", mapping) == (
+        'Dear ACME "the company", of ACME Corporation'
+    )
+    assert count_unresolved(f"Dear {variant}", mapping) == 0
+
+
+def test_a_variant_placeholder_inside_json_is_restored_escaped() -> None:
+    document = json.dumps({"to": "[ORG_1_B]", "cc": "[ORG_1]"})
+    restored = restore(document, _linked_mapping(), json_escape=True)
+    assert json.loads(restored) == {"to": 'ACME "the company"', "cc": "ACME Corporation"}
+
+
+@pytest.mark.parametrize("placeholder", ["[ORG_1_F]", "[ORG_1_A]", "[ORG_2_B]", "[org 1 c]"])
+def test_an_unknown_variant_is_left_unchanged_and_counted(placeholder: str) -> None:
+    mapping = _linked_mapping()
+    assert restore(f"see {placeholder}", mapping) == f"see {placeholder}"
+    assert count_unresolved(f"see {placeholder} and [ORG_1_B]", mapping) == 1

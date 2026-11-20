@@ -1,5 +1,6 @@
 import random
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -15,11 +16,12 @@ def _span(
     score: float = 0.9,
     entity_type: str = "PERSON",
     source: str = "fake",
+    link: str | None = None,
 ) -> Span:
-    return Span(start, end, entity_type, score, source, priority)
+    return Span(start, end, entity_type, score, source, priority, link)
 
 
-def _order_key(span: Span) -> tuple[int, float, int, int, str, str]:
+def _order_key(span: Span) -> tuple[int, float, int, int, str, str, str]:
     return (
         -span.priority,
         -span.score,
@@ -27,6 +29,7 @@ def _order_key(span: Span) -> tuple[int, float, int, int, str, str]:
         span.start,
         span.entity_type,
         span.source,
+        span.link or "",
     )
 
 
@@ -75,6 +78,15 @@ def test_same_range_tie_is_broken_by_entity_type() -> None:
     assert resolve_overlaps([person, org]) == [org]
 
 
+@pytest.mark.parametrize("swap", [False, True])
+def test_spans_that_differ_only_by_link_resolve_the_same_whatever_the_order(swap: bool) -> None:
+    unlinked, first, second = _span(0, 4), _span(0, 4, link="a:1"), _span(0, 4, link="a:2")
+    spans = [second, first, unlinked] if swap else [unlinked, first, second]
+    linked = [second, first] if swap else [first, second]
+    assert resolve_overlaps(spans) == [unlinked]
+    assert resolve_overlaps(linked) == [first]
+
+
 def test_adjacent_spans_do_not_overlap() -> None:
     left, right = _span(0, 4), _span(4, 8)
     assert resolve_overlaps([right, left]) == [left, right]
@@ -106,13 +118,14 @@ def test_input_may_be_any_iterable() -> None:
 
 _SPANS = st.lists(
     st.builds(
-        lambda start, length, priority, score, entity_type, source: _span(
+        lambda start, length, priority, score, entity_type, source, link: _span(
             start,
             start + length,
             priority=priority,
             score=score,
             entity_type=entity_type,
             source=source,
+            link=link,
         ),
         st.integers(min_value=0, max_value=30),
         st.integers(min_value=0, max_value=10),
@@ -120,6 +133,7 @@ _SPANS = st.lists(
         st.sampled_from([0.5, 0.9, 1.0]),
         st.sampled_from(["ORG", "PERSON"]),
         st.sampled_from(["a", "b"]),
+        st.sampled_from([None, "a:1", "a:2", "b:1"]),
     ),
     max_size=25,
 )

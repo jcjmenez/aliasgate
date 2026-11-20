@@ -5,9 +5,22 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from aliasgate.engine import DetectionError, PseudonymizedBatch, Pseudonymizer, restore
+from aliasgate.detectors.dictionary import DictionaryDetector, Term
+from aliasgate.engine import (
+    DetectionError,
+    PseudonymizedBatch,
+    Pseudonymizer,
+    count_unresolved,
+    restore,
+)
 from aliasgate.terms import build_term_pattern
-from aliasgate.types import PRIORITY_LITERAL, PRIORITY_ML, PRIORITY_PROPAGATION, Span
+from aliasgate.types import (
+    PRIORITY_DICTIONARY,
+    PRIORITY_LITERAL,
+    PRIORITY_ML,
+    PRIORITY_PROPAGATION,
+    Span,
+)
 from fakes import FailingDetector, WordListDetector
 from oracles import propagation_oracle
 
@@ -389,3 +402,182 @@ def test_pseudonymize_replaces_exactly_the_spans_that_analyze_reports(
         assert re.fullmatch("".join(pattern), output)
     counts = Counter((span.entity_type, span.source) for spans in analyzed for span in spans)
     assert dict(batch.stats.entities_by_type_and_source) == dict(counts)
+
+
+# Dictionary aliases and variant placeholders (slice 13) --------------------------------------
+
+ALIASED = [Term("ACME Corporation", "ORG", ("ACME",)), Term("Globex S.L.", "ORG", ("Globex",))]
+
+
+def _aliased(**kwargs: object) -> Pseudonymizer:
+    return Pseudonymizer([DictionaryDetector(ALIASED)], **kwargs)  # type: ignore[arg-type]
+
+
+def test_a_term_and_its_alias_share_a_number_and_restore_as_written() -> None:
+    texts = ["ACME Corporation signed.", "ACME paid."]
+    batch = _aliased().pseudonymize(texts)
+    assert batch.texts == ("[ORG_1] signed.", "[ORG_1_B] paid.")
+    assert _restored(batch) == texts
+
+
+def test_the_first_surface_seen_has_no_letter_even_when_it_is_the_alias() -> None:
+    texts = ["ACME paid.", "ACME Corporation signed."]
+    batch = _aliased().pseudonymize(texts)
+    assert batch.texts == ("[ORG_1] paid.", "[ORG_1_B] signed.")
+    assert _restored(batch) == texts
+
+
+def test_a_case_variant_of_an_alias_restores_as_the_first_form_of_that_alias() -> None:
+    batch = _aliased().pseudonymize(["ACME Corporation and ACME.", "Acme again."])
+    assert batch.texts == ("[ORG_1] and [ORG_1_B].", "[ORG_1_B] again.")
+    assert _restored(batch) == ["ACME Corporation and ACME.", "ACME again."]
+
+
+def test_propagation_gives_a_variants_placeholder_to_an_occurrence_the_detector_missed() -> None:
+    detector = WordListDetector(
+        {"ACME Corporation": "ORG", "ACME": "ORG"},
+        links={"ACME Corporation": "fake:1", "ACME": "fake:1"},
+    )
+    batch = Pseudonymizer([detector]).pseudonymize(["ACME Corporation hired ACME.", "acme paid."])
+    assert batch.texts == ("[ORG_1] hired [ORG_1_B].", "[ORG_1_B] paid.")
+    assert _restored(batch) == ["ACME Corporation hired ACME.", "ACME paid."]
+
+
+def test_two_entries_give_two_families() -> None:
+    batch = _aliased().pseudonymize(["ACME Corporation and ACME met Globex.", "Globex S.L. left."])
+    assert batch.texts == ("[ORG_1] and [ORG_1_B] met [ORG_2].", "[ORG_2_B] left.")
+
+
+def test_an_allow_listed_alias_stays_in_place_while_its_term_is_replaced() -> None:
+    assert _aliased(allow_list=["ACME"]).pseudonymize(["ACME Corporation and ACME."]).texts == (
+        "[ORG_1] and ACME.",
+    )
+
+
+def test_a_variant_placeholder_in_the_input_becomes_a_literal_and_is_restored() -> None:
+    texts = ["Use [ORG_1_B] for ACME", "and [org 1 c]"]
+    batch = _aliased().pseudonymize(texts)
+    assert batch.texts == ("Use [LITERAL_1] for [ORG_1]", "and [LITERAL_2]")
+    assert _restored(batch) == texts
+
+
+def test_a_model_answer_with_both_variants_restores_both_surfaces() -> None:
+    batch = _aliased().pseudonymize(["ACME Corporation signed.", "ACME paid."])
+    answer = "[ORG_1_B] paid [ORG_1], then [org 1 b] and [ORG_1_F]."
+    assert restore(answer, batch.mapping) == (
+        "ACME paid ACME Corporation, then ACME and [ORG_1_F]."
+    )
+    assert count_unresolved(answer, batch.mapping) == 1
+
+
+def test_analyze_returns_dictionary_spans_with_their_link() -> None:
+    assert _aliased().analyze(["ACME Corporation and ACME", "acme corporation"]) == [
+        [
+            Span(0, 16, "ORG", 1.0, "dictionary", PRIORITY_DICTIONARY, "dictionary:1"),
+            Span(21, 25, "ORG", 1.0, "dictionary", PRIORITY_DICTIONARY, "dictionary:1"),
+        ],
+        [Span(0, 16, "ORG", 1.0, "dictionary", PRIORITY_DICTIONARY, "dictionary:1")],
+    ]
+
+
+def test_propagated_spans_carry_no_link() -> None:
+    detector = WordListDetector({"ACME": "ORG"}, links={"ACME": "fake:1"})
+    assert Pseudonymizer([detector]).analyze(["ACME", "acme"]) == [
+        [Span(0, 4, "ORG", 0.9, "fake", PRIORITY_ML, "fake:1")],
+        [Span(0, 4, "ORG", 1.0, "propagation", PRIORITY_PROPAGATION)],
+    ]
+
+
+def test_a_linked_surface_never_joins_an_unlinked_entity() -> None:
+    detectors = [
+        WordListDetector({"ACME": "ORG"}, name="plain"),
+        WordListDetector(
+            {"ACME Corporation": "ORG"}, name="linked", links={"ACME Corporation": "x:1"}
+        ),
+    ]
+    batch = Pseudonymizer(detectors).pseudonymize(["ACME", "ACME Corporation"])
+    assert batch.texts == ("[ORG_1]", "[ORG_2]")
+
+
+_LINKED_WORDS = {
+    "Alice": "PERSON",
+    "Ally": "PERSON",
+    "Alicia": "PERSON",
+    "Bob": "PERSON",
+    "ACME": "ORG",
+    "Acme Corp": "ORG",
+    "ACME Inc": "ORG",
+    "Initech": "ORG",
+}
+_LINKS = {
+    "Alice": "fake:1",
+    "Ally": "fake:1",
+    "Alicia": "fake:1",
+    "ACME": "fake:2",
+    "Acme Corp": "fake:2",
+    "ACME Inc": "fake:2",
+}
+_LINKS_WITH_SHARED_ID = {**_LINKS, "Initech": "fake:1"}
+# Whole words come with a trailing space, so that most texts hold several detected surfaces and
+# the linked ones become variants; the other tokens build placeholder-shaped text and partial
+# words.
+_LINKED_WORD_TOKENS = st.sampled_from(
+    [
+        "Alice ", "Ally ", "Alicia ", "Bob ", "ACME ", "Acme Corp ", "ACME Inc ", "Initech ",
+        "alice ", "ally ", "ALLY ", "acme ", "acme corp ", "initech ",
+    ]
+)  # fmt: skip
+_LINKED_OTHER_TOKENS = st.sampled_from(
+    [
+        "Acme", "Corp", "Ally", "[", "]", "\\", "_", " ", "\n", "1", "2", "B", "b", "C",
+        "PERSON", "ORG", "LITERAL", "x", ".",
+    ]
+)  # fmt: skip
+_LINKED_TOKENS = st.one_of(
+    _LINKED_WORD_TOKENS, _LINKED_WORD_TOKENS, _LINKED_WORD_TOKENS, _LINKED_OTHER_TOKENS
+)
+_LINKED_BATCH = st.lists(
+    st.lists(_LINKED_TOKENS, min_size=2, max_size=16).map("".join), min_size=1, max_size=4
+)
+
+
+def _linked(**kwargs: object) -> Pseudonymizer:
+    detector = WordListDetector(_LINKED_WORDS, links=_LINKS_WITH_SHARED_ID)
+    return Pseudonymizer([detector], **kwargs)  # type: ignore[arg-type]
+
+
+@_PROPERTY
+@given(_LINKED_BATCH)
+def test_round_trip_with_linked_spans_restores_the_exact_input(texts: list[str]) -> None:
+    batch = _linked(propagate=False).pseudonymize(texts)
+    assert _restored(batch) == texts
+
+
+@_PROPERTY
+@given(_LINKED_BATCH)
+def test_no_linked_surface_remains_in_the_output(texts: list[str]) -> None:
+    batch = _linked().pseudonymize(texts)
+    for entity in batch.mapping.entities():
+        if entity.entity_type != "LITERAL" and len(entity.key) >= 3:
+            pattern = build_term_pattern(entity.surface)
+            assert not any(pattern.search(text) for text in batch.texts)
+
+
+@_PROPERTY
+@given(_LINKED_BATCH, _LINKED_BATCH, st.booleans())
+def test_appending_texts_keeps_every_placeholder_variant_and_surface(
+    first: list[str], appended: list[str], propagate: bool
+) -> None:
+    short = _linked(propagate=propagate).pseudonymize(first)
+    long = _linked(propagate=propagate).pseudonymize(first + appended)
+    if not propagate:
+        assert long.texts[: len(first)] == short.texts
+    for entity in short.mapping.entities():
+        kept = long.mapping.get(entity.key)
+        assert kept == entity
+        assert kept is not None
+        assert (kept.placeholder, kept.variant, kept.surface) == (
+            entity.placeholder,
+            entity.variant,
+            entity.surface,
+        )

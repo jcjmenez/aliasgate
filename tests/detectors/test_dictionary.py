@@ -1,8 +1,10 @@
+import re
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from aliasgate.detectors.dictionary import DictionaryDetector, Term
+from aliasgate.detectors.dictionary import MAX_ALIASES, DictionaryDetector, Term
 from aliasgate.mapping import normalize_key
 from aliasgate.types import PRIORITY_DICTIONARY, Span
 
@@ -103,6 +105,187 @@ def test_dotted_and_dotless_i_variants_are_typed_like_their_term() -> None:
     )
     text = "\u0130van Petrov met \u0131ris tech"
     assert _found(detector, text) == [("\u0130van Petrov", "PERSON"), ("\u0131ris tech", "ORG")]
+
+
+# Aliases (slice 13) ----------------------------------------------------------------------------
+
+
+def _linked(detector: DictionaryDetector, text: str) -> list[tuple[str, str, str | None]]:
+    return [
+        (text[span.start : span.end], span.entity_type, span.link) for span in detector.detect(text)
+    ]
+
+
+ALIASED = DictionaryDetector(
+    [
+        Term("ACME Corporation", "ORG", ("ACME", "ACME Corp.")),
+        Term("Globex S.L.", "ORG", ("Globex",)),
+        Term("Project Falcon", "PROJECT"),
+    ]
+)
+
+
+def test_an_alias_is_detected_with_its_entrys_type_and_link() -> None:
+    text = "ACME Corporation, ACME and ACME Corp. met Globex S.L. and Globex on Project Falcon."
+    assert _linked(ALIASED, text) == [
+        ("ACME Corporation", "ORG", "dictionary:1"),
+        ("ACME", "ORG", "dictionary:1"),
+        ("ACME Corp.", "ORG", "dictionary:1"),
+        ("Globex S.L.", "ORG", "dictionary:2"),
+        ("Globex", "ORG", "dictionary:2"),
+        ("Project Falcon", "PROJECT", None),
+    ]
+
+
+def test_spans_of_an_aliased_entry_keep_score_source_and_priority() -> None:
+    assert ALIASED.detect("ACME") == [
+        Span(0, 4, "ORG", 1.0, "dictionary", PRIORITY_DICTIONARY, "dictionary:1")
+    ]
+
+
+def test_an_entry_without_aliases_gives_spans_without_a_link() -> None:
+    detector = DictionaryDetector([Term("Globex S.L.", "ORG"), Term("ACME", "ORG", ("ACME Inc",))])
+    assert _linked(detector, "Globex S.L. and ACME") == [
+        ("Globex S.L.", "ORG", None),
+        ("ACME", "ORG", "dictionary:2"),
+    ]
+
+
+def test_at_one_position_the_longest_of_the_term_and_its_aliases_wins() -> None:
+    detector = DictionaryDetector([Term("ACME", "ORG", ("ACME Corporation Europe",))])
+    assert _linked(detector, "ACME Corporation Europe and ACME Corporation") == [
+        ("ACME Corporation Europe", "ORG", "dictionary:1"),
+        ("ACME", "ORG", "dictionary:1"),
+    ]
+
+
+def test_an_alias_is_matched_ignoring_case_with_any_whitespace_and_as_a_whole_term() -> None:
+    assert _linked(ALIASED, "acme\ncorp. and acme corp and ACMEs and Globexes") == [
+        ("acme\ncorp.", "ORG", "dictionary:1"),
+        ("acme", "ORG", "dictionary:1"),
+    ]
+
+
+def test_an_alias_of_a_later_entry_is_linked_to_that_entry() -> None:
+    detector = DictionaryDetector(
+        [Term("Project Falcon", "PROJECT"), Term("Globex S.L.", "ORG", ("Globex",))]
+    )
+    assert _linked(detector, "Globex") == [("Globex", "ORG", "dictionary:2")]
+
+
+def test_a_dotted_capital_i_in_an_alias_is_typed_and_linked_like_its_entry() -> None:
+    # As for terms: the key lookup misses, and "Alba R" has the same token lengths as "Ivan P"
+    # and comes first in the alternation, so the fallback has to skip it.
+    detector = DictionaryDetector(
+        [Term("Alba Romero", "ORG", ("Alba R",)), Term("Ivan Petrov", "PERSON", ("Ivan P",))]
+    )
+    assert _linked(detector, "\u0130van P") == [("\u0130van P", "PERSON", "dictionary:2")]
+
+
+TERMS = (("ACME Corporation", "ORG"), ("Globex S.L.", "ORG"), ("Project Falcon", "PROJECT"))
+SURFACES = ("ACME Corporation", "ACME", "Globex S.L.", "Globex", "Project Falcon", "Falcon")
+
+
+@pytest.mark.parametrize(
+    ("terms", "message"),
+    [
+        (
+            [Term("ACME Corporation", "ORG", ("ACME", " \t "))],
+            "term 1, alias 2: the alias is empty",
+        ),
+        ([Term("ACME Corporation", "ORG", ("",))], "term 1, alias 1: the alias is empty"),
+        (
+            [Term("Globex S.L.", "ORG"), Term("ACME", "ORG", ("ACME Corp.", "acme"))],
+            "term 2, alias 2 repeats the term",
+        ),
+        (
+            [Term("ACME Corporation", "ORG", ("ACME", "Falcon", "acme"))],
+            "term 1, alias 3 repeats alias 1",
+        ),
+        (
+            [Term("ACME Corporation", "ORG", ("ACME",)), Term("Globex", "ORG", ("Acme",))],
+            "terms 1 and 2 share a term or alias",
+        ),
+        (
+            [Term("ACME Corporation", "ORG", ("ACME",)), Term("acme", "ORG")],
+            "terms 1 and 2 share a term or alias",
+        ),
+        (
+            [Term("ACME", "ORG"), Term("ACME Corporation", "ORG", ("ACME",))],
+            "terms 1 and 2 share a term or alias",
+        ),
+        (
+            [
+                Term("Project Falcon", "PROJECT"),
+                Term("Globex S.L.", "ORG", ("Globex",)),
+                Term("Globex S.L.", "ORG", ("Globex",)),
+            ],
+            "terms 2 and 3 share a term or alias",
+        ),
+        (
+            [Term("Globex S.L.", "ORG"), Term("Globex  S.L.", "ORG", ("Globex",))],
+            "terms 1 and 2 share a term or alias",
+        ),
+        (
+            [Term("ACME", "ORG", ("ACME Corp.",)), Term("ACME", "PROJECT")],
+            "terms 1 and 2 are the same term with different entity types",
+        ),
+    ],
+    ids=[
+        "whitespace-alias",
+        "empty-alias",
+        "alias-repeats-term",
+        "alias-repeats-alias",
+        "alias-in-two-entries",
+        "alias-is-another-term",
+        "term-is-another-alias",
+        "duplicate-entry-with-aliases",
+        "duplicate-term-one-side-with-aliases",
+        "same-term-different-types",
+    ],
+)
+def test_alias_errors_name_positions_and_never_a_term_or_alias(
+    terms: list[Term], message: str
+) -> None:
+    with pytest.raises(ValueError, match=re.escape(message)) as excinfo:
+        DictionaryDetector(terms)
+    assert str(excinfo.value) == message
+    surfaces = {surface for term in terms for surface in (term.term, *term.aliases)}
+    for surface in surfaces | set(SURFACES):
+        if surface.strip():
+            assert surface.lower() not in str(excinfo.value).lower()
+
+
+def test_25_aliases_are_accepted_and_26_are_rejected() -> None:
+    assert MAX_ALIASES == 25
+    aliases = tuple(f"Falcon {index}" for index in range(MAX_ALIASES + 1))
+    detector = DictionaryDetector([Term("Project Falcon", "PROJECT", aliases[:MAX_ALIASES])])
+    assert len(detector.detect(" ".join(aliases[:MAX_ALIASES]) + " Project Falcon")) == 26
+    with pytest.raises(ValueError, match="more than 25 aliases") as excinfo:
+        DictionaryDetector([Term("ACME", "ORG"), Term("Project Falcon", "PROJECT", aliases)])
+    assert str(excinfo.value) == "term 2 has more than 25 aliases"
+
+
+def test_a_duplicate_entry_without_aliases_is_still_ignored() -> None:
+    detector = DictionaryDetector(
+        [
+            Term("Globex S.L.", "ORG"),
+            Term("ACME", "ORG", ("ACME Corp.",)),
+            Term("globex s.l.", "ORG"),
+        ]
+    )
+    assert _linked(detector, "Globex S.L.") == [("Globex S.L.", "ORG", None)]
+
+
+def test_term_repr_shows_neither_the_term_nor_the_aliases() -> None:
+    rendered = repr(Term("Globex S.L.", "ORG", ("Globex", "GSL Holdings")))
+    assert "Globex" not in rendered
+    assert "GSL" not in rendered
+    assert "ORG" in rendered
+
+
+def test_term_aliases_default_to_an_empty_tuple() -> None:
+    assert Term("ACME", "ORG").aliases == ()
 
 
 _WORDS = ["ACME", "Corporation", "Globex", "S.L.", "Falcon", "C++", "Team"]

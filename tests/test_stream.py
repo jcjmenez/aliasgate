@@ -15,7 +15,8 @@ TEXT = "Hi [PERSON_1], welcome to [ORG_1]."
 def _mapping() -> Mapping:
     mapping = Mapping()
     mapping.assign("PERSON", 'Juan "JP" Pérez')
-    mapping.assign("ORG", "ACME")
+    mapping.assign("ORG", "ACME", link="dictionary:1")
+    mapping.assign("ORG", 'ACME "Corp"', link="dictionary:1")
     return mapping
 
 
@@ -90,6 +91,25 @@ def test_unresolved_counts_an_unknown_placeholder_once() -> None:
     assert restorer.unresolved == 1
 
 
+VARIANT_TEXT = "Hi [ORG_1_B], [org 1 b] and \\[ORG\\_1\\_B\\] of [ORG_1]; not [ORG_1_C]."
+
+
+@pytest.mark.parametrize("cut", range(len(VARIANT_TEXT) + 1))
+def test_variant_placeholders_cut_anywhere_are_restored_like_restore(cut: int) -> None:
+    assert _stream([VARIANT_TEXT[:cut], VARIANT_TEXT[cut:]]) == restore(VARIANT_TEXT, _mapping())
+    assert restore(VARIANT_TEXT, _mapping()) == (
+        'Hi ACME "Corp", ACME "Corp" and ACME "Corp" of ACME; not [ORG_1_C].'
+    )
+
+
+def test_an_unknown_variant_is_counted_once() -> None:
+    restorer = StreamRestorer(_mapping())
+    restorer.feed("[ORG_1_B] and [ORG_1")
+    restorer.feed("_F] and [ORG_1_A]")
+    restorer.flush()
+    assert restorer.unresolved == 2
+
+
 def test_flush_empties_the_buffer() -> None:
     restorer = StreamRestorer(_mapping())
     restorer.feed("[ORG")
@@ -101,6 +121,13 @@ def test_flush_empties_the_buffer() -> None:
 _TOKENS = [
     "[PERSON_1]",
     "[ORG_1]",
+    "[ORG_1_B]",
+    "[org 1 b]",
+    "\\[ORG\\_1\\_B\\]",
+    "[ORG_1_C]",
+    "[ORG_1_",
+    "_B]",
+    " B]",
     "[PERSON_9]",
     "[LITERAL_1]",
     "[person 1]",

@@ -3,6 +3,7 @@ import gzip
 import json
 import re
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -10,7 +11,7 @@ import pytest
 import respx
 from payloads import CHAT, OPENAI, ClientFactory, chat_request, chat_response
 
-from aliasgate.config import ListenSettings, PolicySettings, Settings
+from aliasgate.config import ListenSettings, PolicySettings, Settings, load_settings
 from aliasgate.dialects.base import PreparedRequest
 from aliasgate.dialects.openai_chat import OpenAIChatDialect
 from aliasgate.engine import Pseudonymizer
@@ -537,3 +538,27 @@ async def test_upstream_json_scalars_are_restored_or_returned(
     )
     response = await client.post(CHAT, json=chat_request("Ask about Juan Pérez"))
     assert response.json() == expected
+
+
+async def test_a_term_and_its_alias_reach_the_upstream_as_variants_and_come_back_as_written(
+    make_client: ClientFactory, upstream: respx.MockRouter, tmp_path: Path
+) -> None:
+    (tmp_path / "aliases.yaml").write_text(
+        "terms:\n  - term: ACME Corporation\n    type: ORG\n    aliases: [ACME]\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "aliases-config.yaml"
+    config.write_text("detection:\n  dictionary:\n    files: [aliases.yaml]\n", encoding="utf-8")
+    route = upstream.post(CHAT).respond(json=chat_response("[ORG_1_B] and [ORG_1]"))
+    async with make_client(load_settings(config, env={})) as client:
+        response = await client.post(
+            CHAT, json=chat_request("ACME Corporation signed.", "ACME paid.")
+        )
+    assert response.status_code == 200
+    assert [message["content"] for message in _sent(route)["messages"]] == [
+        "[ORG_1] signed.",
+        "[ORG_1_B] paid.",
+    ]
+    assert "ACME" not in route.calls.last.request.content.decode()
+    assert _content(response) == "ACME and ACME Corporation"
+    assert response.headers["x-aliasgate-entities"] == "2"

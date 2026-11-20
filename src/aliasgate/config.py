@@ -329,7 +329,7 @@ def load_settings(path: Path | None, env: Mapping[str, str] = os.environ) -> Set
 
 
 def load_terms(path: Path) -> list[Term]:
-    """Parse and validate a dictionary file; errors name entry positions, never term content."""
+    """Parse and validate a dictionary file; errors name entry positions, never terms or aliases."""
     with path.open(encoding="utf-8") as stream:
         try:
             data = yaml.safe_load(stream)
@@ -350,8 +350,8 @@ def _term(path: Path, position: int, entry: object) -> Term:
     where = f"dictionary file {path}, entry {position}"
     if not isinstance(entry, dict):
         raise ValueError(f"{where}: must be a mapping with 'term' and 'type'")
-    if set(entry) - {"term", "type"}:
-        raise ValueError(f"{where}: only 'term' and 'type' are allowed")
+    if set(entry) - {"term", "type", "aliases"}:
+        raise ValueError(f"{where}: only 'term', 'type' and 'aliases' are allowed")
     for key in ("term", "type"):
         if key not in entry:
             raise ValueError(f"{where}: missing '{key}'")
@@ -364,4 +364,11 @@ def _term(path: Path, position: int, entry: object) -> Term:
         raise ValueError(f"{where}: {exc}") from None
     if not normalize_key(term):
         raise ValueError(f"{where}: 'term' is empty")
-    return Term(term, entity_type)
+    aliases = entry.get("aliases", [])
+    if not isinstance(aliases, list) or not all(isinstance(alias, str) for alias in aliases):
+        raise ValueError(f"{where}: 'aliases' must be a list of strings")
+    for index, alias in enumerate(aliases, start=1):
+        if not normalize_key(alias):
+            raise ValueError(f"{where}, alias {index}: the alias is empty")
+    # Repeats, keys shared with other entries and the limit are checked by the detector.
+    return Term(term, entity_type, tuple(aliases))

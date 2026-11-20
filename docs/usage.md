@@ -256,6 +256,7 @@ dictionary:
 terms:
   - term: Globex S.L.
     type: ORG
+    aliases: [Globex, Globex Group]   # optional: other names of the same entry
   - term: Project Falcon
     type: PROJECT      # your own entity types are allowed: upper case, [A-Z_], 40 characters
   - term: "Yes Bank"   # quote terms YAML would read as something else (yes, no, numbers)
@@ -267,6 +268,25 @@ several terms match at one position, the longest wins; a dictionary match also b
 the ML model on the same text. The same term with two types, in one file or across files, is an
 error. List several files under `detection.dictionary.files`; relative paths are resolved
 against the configuration file's directory.
+
+**Aliases** are other names of one entry, matched exactly like its term. The term and its
+aliases share one number, and each name gets its own placeholder: the first name seen in a
+request is `[ORG_1]`, and the next ones `[ORG_1_B]`, `[ORG_1_C]` and so on, in the order they
+appear. The model can tell that `[ORG_1]` and `[ORG_1_B]` are one organisation, and each
+placeholder is restored as the name it replaced:
+
+```console
+$ echo "Globex S.L. signed. Globex pays in May." | aliasgate demo --config aliasgate.yaml
+[ORG_1] signed. [ORG_1_B] pays in May.
+entity type  entities  occurrences
+ORG                 2            2
+```
+
+An entry may have up to 25 aliases. These stop the start-up, and the message names entry
+positions, never the names: an empty alias, an alias that repeats its term or another alias of
+the entry, more than 25 aliases, and a term or alias that also belongs to another entry
+(`terms 3 and 7 share a term or alias`). An entry listed twice with the same term and type is
+ignored, as before, but only when neither copy has aliases.
 
 The **allow list** holds terms that are never replaced, typically your own company's and
 products' names, which the ML model or a dictionary would otherwise replace. A detected value is
@@ -366,6 +386,12 @@ body, and the leak audit (section 9) rejects the request with `leak_audit_failed
   not a leak, and it is counted (`aliasgate_unresolved_placeholders_total`).
 - **Case variants merge.** `ACME` and `Acme` in one request are one entity, restored as the
   form seen first.
+- **Aliases are linked.** A dictionary term and its aliases reach the model as one number with
+  variant letters (`[ORG_1]`, `[ORG_1_B]`), and each is restored as written. A model may write
+  the placeholder of another variant, such as `[ORG_1]` where the user wrote `Globex`; the user
+  then reads that variant's name. Bracketed text that looks like a placeholder with a letter,
+  such as `[Step 1 a]`, is replaced as a `LITERAL` and restored exactly, like `[PERSON_1]` in a
+  user's text.
 - **Tasks that degrade.** Anything that depends on the real value: guessing gender or origin
   from a name, arithmetic on a masked number, facts about a real company, provider-side tools
   such as hosted web search, which only see placeholders. Models sometimes comment on the
@@ -452,7 +478,8 @@ forwarded query string and headers: lowering them breaks the logging rule.
 `logging.level: DEBUG` adds no text either.
 
 **Headers.** Every response carries `x-aliasgate-request-id` and `x-aliasgate-entities`, the
-number of entities in the request's mapping (0 when nothing was replaced).
+number of entities in the request's mapping (0 when nothing was replaced). That is the number of
+distinct placeholders: a term and its alias in one request count as 2.
 
 **Metrics.** Prometheus metrics are served at `GET /metrics` on the gateway's own port when
 `metrics.enabled` (the default). Label values are chosen by the gateway (routes such as
