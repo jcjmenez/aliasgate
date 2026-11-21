@@ -144,10 +144,10 @@ characters) and 0.5238 in Spanish (12,738 of 24,318).
 | Type | en: gold | en: `recall_overlap` | en: `recall_exact` | en: `precision_exact` | es: gold | es: `recall_overlap` | es: `recall_exact` | es: `precision_exact` |
 |---|---|---|---|---|---|---|---|---|
 | `EMAIL` | 175 | 1.000 | 1.000 | 1.000 | 177 | 1.000 | 1.000 | 1.000 |
-| `PHONE` | 97 | 1.000 | 1.000 | 0.858 | 97 | 1.000 | 1.000 | 1.000 |
+| `PHONE` | 97 | 1.000 | 1.000 | 1.000 | 97 | 1.000 | 1.000 | 1.000 |
 | `IBAN` | 108 | 1.000 | 1.000 | 1.000 | 106 | 1.000 | 1.000 | 1.000 |
 | `CREDIT_CARD` | 54 | 1.000 | 1.000 | 1.000 | 54 | 1.000 | 1.000 | 1.000 |
-| `NATIONAL_ID` | 60 | 1.000 | 0.733 | 1.000 | 62 | 1.000 | 1.000 | 1.000 |
+| `NATIONAL_ID` | 60 | 1.000 | 1.000 | 1.000 | 62 | 1.000 | 1.000 | 1.000 |
 | `TAX_ID` | 44 | 1.000 | 1.000 | 1.000 | 44 | 1.000 | 1.000 | 1.000 |
 | `IP_ADDRESS` | 72 | 1.000 | 1.000 | 1.000 | 72 | 1.000 | 1.000 | 1.000 |
 | `PERSON` | 267 | 0.000 | 0.000 | – | 266 | 0.000 | 0.000 | – |
@@ -155,8 +155,10 @@ characters) and 0.5238 in Spanish (12,738 of 24,318).
 | `ADDRESS` | 61 | 0.000 | 0.000 | – | 60 | 0.000 | 0.000 | – |
 
 No example without entities had a predicted span (0 of 85 in each language), and there was no
-round-trip failure. In English, 16 US SSNs are replaced as `PHONE`, because their nine digits
-also form a valid Spanish number: they are covered, but under the wrong type (backlog §9).
+round-trip failure. Re-measured on 2026-11-21 after slice 14: the 16 English US SSNs whose nine
+digits also form a valid Spanish number, replaced as `PHONE` until then, are now
+`NATIONAL_ID`, which raised English `NATIONAL_ID` `recall_exact` from 0.733 and English
+`PHONE` `precision_exact` from 0.858 to 1.000. No other number changed.
 
 ### ML layer
 

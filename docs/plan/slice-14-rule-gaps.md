@@ -47,6 +47,31 @@ Slice 13 (v0.2.0 released). Every earlier slice is merged.
    of base64 characters. The text after the key is kept. Rejected: a span to the end of the
    text, which would hide everything the user wrote after the key.
 
+## Decisions made while implementing
+
+- **Context groups.** `_Rule.group` names the pattern group that is the candidate. Only the
+  SSN keyword rule uses it. A rejected candidate resumes the search one character after the
+  start of the whole match, so a keyword followed by an implausible number does not stop the
+  scan.
+- **PEM linear time.** The END line is searched for only until it is missing once. The
+  existing case of 24,000 BEGIN lines did not catch a regression to searching after every
+  BEGIN line: the literal search is fast enough that the quadratic version took 4 s locally,
+  under the 15 s bound. A case of 100,000 BEGIN lines takes 0.06 s, against 68 s for the
+  quadratic version, and the test now catches it.
+- **Tests beyond the list.** `SSNs:` and a keyword exactly 25 characters before the number are
+  detected, and `ssnrecord` is not. A PEM key without END line at the very end of the text, a
+  `TAX_ID` adversarial case (`"B-58.818." * 20_000`), and `https://` among the pieces of the
+  arbitrary-text property. The URL property has its own generator (URL starts, emails, IP
+  addresses, cards, query separators), because random pieces rarely form a URL with a value
+  inside. Checked: 448 of 3,000 generated texts have a span dropped inside a URL.
+- **Measured.** The five Hypothesis properties of `test_rules.py` passed 20,000 examples each.
+  Each new condition was broken on purpose and a test failed: the URL filter, the SSN score,
+  the dot stripping, both dotted-number lookarounds, the 25-character gap and its no-digit
+  rule, the base64 line end, the escaped line breaks, the encrypted-key headers, an
+  apostrophe at either end of the local part, combining marks, `(?<!\w')` (the apostrophe
+  case then takes over 15 s) and the single END search. The rules-only baseline gave exactly
+  the numbers expected below.
+
 ## Dependencies to add
 
 None.

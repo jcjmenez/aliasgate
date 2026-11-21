@@ -22,6 +22,8 @@ tool results.
 These are known and not fully solved. A deployment must accept or mitigate each one.
 
 1. **Missed detections.** A name, company or address that no layer recognises is sent as is.
+   The rules recognise only the formats listed in [usage §6.1](usage.md#61-entity-types): an
+   identifier written another way, or of another country, is a missed detection too.
    Mitigations: the company dictionary for known terms, a recall-oriented ML threshold,
    propagation, and measuring recall on your own data with the
    [evaluation harness](evaluation.md).

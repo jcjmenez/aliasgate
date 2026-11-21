@@ -99,7 +99,7 @@ regulation. Read the [threat model](https://github.com/jcjmenez/aliasgate/blob/m
 | 11 | Evaluation harness | done |
 | 12 | CLI, Docker image, first release | done |
 | 13 | Dictionary aliases (entity linking, part 1) | done |
-| 14 | Rule coverage gaps | planned |
+| 14 | Rule coverage gaps | done |
 
 ## Development
 
