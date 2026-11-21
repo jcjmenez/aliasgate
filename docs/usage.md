@@ -328,6 +328,27 @@ international prefix are read in the regions of `detection.rules.phone_regions` 
 by default). Amounts and dates are never replaced: the model needs them, and they rarely
 identify anyone on their own.
 
+The forms each rule recognises:
+
+- **DNI, NIE and CIF** with or without a hyphen or a space before the control letter, a CIF also
+  after its first letter, and with the digits grouped by dots: `12.345.678-Z`,
+  `X-1.234.567-L`, `B-58.818.501`.
+- **US SSN** with hyphens (`078-05-1120`) anywhere. Without hyphens (`078051120`,
+  `078 05 1120`) only after one of the keywords `SSN`, `SSNs`, `SS#` or `social security`, in
+  any case, on the same line, at most 25 characters before the number and with no digit in
+  between. JSON keys such as `"ssn":` count. Each number needs its own keyword: in a table
+  whose header row says `SSN`, the bare numbers in that column are not found.
+- **Email** with letters of any script (`josé@example.com`, `juan@bücher.example`) and with an
+  apostrophe inside the local part (`o'connor@example.com`). In scripts written without
+  spaces, the replaced span can include the words next to the address.
+- **PEM private keys** from the BEGIN line to the END line, or, when the END line is missing,
+  to the last line made only of base64 characters. The line breaks may be JSON escapes
+  (`\n`). A key without END line whose lines were joined with spaces is not found past its
+  BEGIN line.
+- **URL**, when enabled, is replaced whole, including an email, a token or credentials inside
+  it. A value that only partly overlaps a URL wins instead, and the rest of the URL is sent as
+  it is. So does a dictionary term inside a URL, because dictionaries rank above rules.
+
 ### 6.2 The ML detector
 
 Names, organisations and addresses that no dictionary lists need the ML detector. It needs the
