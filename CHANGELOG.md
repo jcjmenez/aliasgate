@@ -7,6 +7,11 @@ change the configuration or the command line.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-21
+
+Rule coverage gaps. The rules find identifiers that 0.2.0 forwarded unchanged, and with `URL`
+enabled a URL is replaced whole.
+
 ### Changed
 
 - A US SSN whose nine digits also form a valid Spanish number (`782-77-8477`) is replaced as
@@ -75,6 +80,7 @@ it has not run in production yet. Read the threat model before relying on it.
   offline), non-root, with no configuration inside.
 - Documentation: usage, deployment, architecture, threat model, evaluation.
 
-[Unreleased]: https://github.com/jcjmenez/aliasgate/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jcjmenez/aliasgate/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jcjmenez/aliasgate/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jcjmenez/aliasgate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jcjmenez/aliasgate/releases/tag/v0.1.0
