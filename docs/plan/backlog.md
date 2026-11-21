@@ -99,6 +99,12 @@ SSN score (0.85), and the phone span may include an opening parenthesis. The val
 so nothing leaks, but the model sees the wrong type. Sixteen English examples of the synthetic
 corpus show it.
 
+**Cut into [slice 14](slice-14-rule-gaps.md).** Every gap above, the type conflict, and the
+forms found next to them: Spanish identifiers with dots or a space, emails with an apostrophe or
+a non-ASCII domain. Slice 14 removes the fixed items from this section and adds the two it
+found (a dictionary term inside a URL, and a value that only partly overlaps a URL). Other
+countries' identifiers, passports, licence plates, phone formats and secret formats stay here.
+
 ## 10. Request fields forwarded unchanged
 
 Slice 05 leaves some OpenAI request fields that can carry end-user data untouched, because
