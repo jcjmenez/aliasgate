@@ -7,6 +7,11 @@ change the configuration or the command line.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-21
+
+Dictionary aliases. A dictionary without aliases gives the same placeholders and answers as
+0.1.0.
+
 ### Added
 
 - Dictionary aliases: an entry may list other names under `aliases`. The term and its aliases
@@ -49,5 +54,6 @@ it has not run in production yet. Read the threat model before relying on it.
   offline), non-root, with no configuration inside.
 - Documentation: usage, deployment, architecture, threat model, evaluation.
 
-[Unreleased]: https://github.com/jcjmenez/aliasgate/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jcjmenez/aliasgate/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jcjmenez/aliasgate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jcjmenez/aliasgate/releases/tag/v0.1.0
