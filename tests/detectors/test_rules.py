@@ -1,11 +1,13 @@
+import string
 import time
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from aliasgate.detectors.checksums import luhn_valid
+from aliasgate.detectors.checksums import es_cif_valid, es_dni_valid, luhn_valid, us_ssn_plausible
 from aliasgate.detectors.rules import DEFAULT_RULE_TYPES, RuleDetector
+from aliasgate.resolve import resolve_overlaps
 from aliasgate.types import PRIORITY_RULE, Span
 
 DETECTOR = RuleDetector()
@@ -14,6 +16,7 @@ WITH_URL = RuleDetector(enabled_types=DEFAULT_RULE_TYPES | {"URL"})
 PEM_BEGIN = "-----BEGIN " + "PRIVATE KEY-----"
 PEM_END = "-----END " + "PRIVATE KEY-----"
 PEM_BODY = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldY"
+RSA_PEM_BEGIN = "-----BEGIN " + "RSA PRIVATE KEY-----"
 
 
 def _pem(begin: str = PEM_BEGIN, end: str = PEM_END) -> str:
@@ -38,6 +41,11 @@ SECRETS = [
 VALID = [
     ("EMAIL", "juan.perez@example.com"),
     ("EMAIL", "a.b+tag@mail.example.org"),
+    ("EMAIL", "jos\u00e9@example.com"),
+    ("EMAIL", "jose\u0301@example.com"),
+    ("EMAIL", "o'connor@example.com"),
+    ("EMAIL", "n\u00fa\u00f1ez@example.org"),
+    ("EMAIL", "juan@b\u00fccher.example"),
     ("IBAN", "ES91 2100 0418 4502 0005 1332"),
     ("IBAN", "ES9121000418450200051332"),
     ("IBAN", "DE89 3704 0044 0532 0130 00"),
@@ -48,7 +56,16 @@ VALID = [
     ("NATIONAL_ID", "12345678Z"),
     ("NATIONAL_ID", "X1234567L"),
     ("NATIONAL_ID", "078-05-1120"),
+    ("NATIONAL_ID", "12.345.678-Z"),
+    ("NATIONAL_ID", "12.345.678Z"),
+    ("NATIONAL_ID", "12.345.678 Z"),
+    ("NATIONAL_ID", "X-1.234.567-L"),
+    ("NATIONAL_ID", "X1.234.567L"),
     ("TAX_ID", "A58818501"),
+    ("TAX_ID", "B-58818501"),
+    ("TAX_ID", "B 58818501"),
+    ("TAX_ID", "B-58.818.501"),
+    ("TAX_ID", "P-2800000H"),
     ("PHONE", "+34 612 345 678"),
     ("PHONE", "+1 415 555 2671"),
     ("IP_ADDRESS", "192.0.2.44"),
@@ -67,6 +84,10 @@ INVALID = [
     ("NATIONAL_ID", "666-12-3456"),
     ("NATIONAL_ID", "900-12-3456"),
     ("TAX_ID", "A58818502"),
+    ("TAX_ID", "B-58818502"),
+    ("TAX_ID", "B-58.818.502"),
+    ("NATIONAL_ID", "12.345.678-A"),
+    ("NATIONAL_ID", "X-1.234.567-A"),
     ("PHONE", "+34 12"),
     ("PHONE", "12345"),
     ("IP_ADDRESS", "999.1.1.1"),
@@ -115,7 +136,7 @@ def test_invalid_vector_yields_no_span_of_its_type(entity_type: str, value: str)
 def test_spans_carry_source_priority_and_the_rule_score() -> None:
     text = "Mail juan.perez@example.com, SSN 078-05-1120, IP 192.0.2.44, tel +34 612 345 678."
     scores = {span.entity_type: span.score for span in DETECTOR.detect(text)}
-    assert scores == {"EMAIL": 1.0, "NATIONAL_ID": 0.85, "IP_ADDRESS": 0.9, "PHONE": 0.9}
+    assert scores == {"EMAIL": 1.0, "NATIONAL_ID": 0.95, "IP_ADDRESS": 0.9, "PHONE": 0.9}
     assert all(
         (span.source, span.priority) == ("rules", PRIORITY_RULE) for span in DETECTOR.detect(text)
     )
@@ -256,8 +277,9 @@ def test_each_pem_block_ends_at_its_own_end_line() -> None:
     assert _found(DETECTOR, text, "SECRET") == [_pem(), _pem()]
 
 
-def test_pem_header_without_end_line_is_not_a_span() -> None:
-    assert _found(DETECTOR, f"{PEM_BEGIN}\n{PEM_BODY}\n", "SECRET") == []
+def test_pem_key_without_end_line_is_a_secret_up_to_its_last_base64_line() -> None:
+    # Slice 14 reverses the v0.2.0 expectation, which forwarded such a key unchanged.
+    assert _found(DETECTOR, f"{PEM_BEGIN}\n{PEM_BODY}\n", "SECRET") == [f"{PEM_BEGIN}\n{PEM_BODY}"]
 
 
 @pytest.mark.parametrize(
@@ -313,13 +335,25 @@ def test_detect_is_deterministic() -> None:
         ("EMAIL", "%" * 300_000),
         ("EMAIL", "a." * 50_000),
         ("EMAIL", "a@" * 50_000),
+        ("EMAIL", "a'" * 50_000),
+        ("EMAIL", "\u00e9." * 50_000),
+        ("EMAIL", "\u00e9@" * 50_000),
         # Validated rules retry every candidate start, so they get smaller inputs.
         ("IBAN", "ES12 " * 8_000),
         ("CREDIT_CARD", "1 " * 20_000),
         ("CREDIT_CARD", "1-" * 20_000),
+        ("NATIONAL_ID", "12.345." * 20_000),
+        ("NATIONAL_ID", "ssn " * 30_000),
+        ("NATIONAL_ID", "SSN" + " " * 100_000),
+        ("TAX_ID", "B-58.818." * 20_000),
         ("IP_ADDRESS", "1." * 50_000),
         ("IP_ADDRESS", "a:" * 50_000),
         ("SECRET", (PEM_BEGIN + "\n") * 24_000),
+        # Sized so that searching for an END line again after every BEGIN line, which is
+        # quadratic, takes over a minute locally.
+        ("SECRET", (PEM_BEGIN + "\n") * 100_000),
+        ("SECRET", PEM_BEGIN + "\nA" * 100_000),
+        ("SECRET", (PEM_BEGIN + "\nAAAA ") * 20_000),
         ("SECRET", "sk-" * 33_000),
         ("SECRET", "ey" + "J." * 50_000),
         ("URL", "http://" * 15_000),
@@ -335,7 +369,10 @@ def test_adversarial_input_is_scanned_in_linear_time(entity_type: str, text: str
     assert time.perf_counter() - started < 15.0
 
 
-_PIECES = st.sampled_from([value for _, value in VALID + INVALID] + [" ", ".", "-", "\n", "@", ":"])
+_PIECES = st.sampled_from(
+    [value for _, value in VALID + INVALID]
+    + [" ", ".", "-", "\n", "@", ":", "'", "\u00e9", "SSN ", PEM_BEGIN, "\\n", "https://"]
+)
 _TEXTS = st.one_of(st.text(), st.lists(_PIECES | st.text(max_size=3), max_size=8).map("".join))
 
 
@@ -447,3 +484,237 @@ def test_number_with_an_international_prefix_is_a_phone_in_any_grouping(
 ) -> None:
     detector = RuleDetector(enabled_types={"PHONE"}, phone_regions=(region,))
     assert _found(detector, f"Tel {value} ok") == [value]
+
+
+# Slice 14: rule coverage gaps -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", ["9.12.345.678-Z", "112.345.678-Z", "12.3456.78-Z"])
+def test_digits_inside_a_longer_dotted_number_are_not_a_national_id(text: str) -> None:
+    assert _found(DETECTOR, f"Ref {text} ok", "NATIONAL_ID") == []
+
+
+@pytest.mark.parametrize("text", ["B-58.818.501.2", "B-5881.8501"])
+def test_cif_with_dots_elsewhere_is_not_a_tax_id(text: str) -> None:
+    assert _found(DETECTOR, f"Ref {text} ok", "TAX_ID") == []
+
+
+@given(st.integers(0, 99_999_999), st.sampled_from(string.ascii_uppercase))
+def test_dotted_dni_with_a_hyphen_is_detected_only_with_its_control_letter(
+    number: int, letter: str
+) -> None:
+    digits = f"{number:08d}"
+    value = f"{digits[:2]}.{digits[2:5]}.{digits[5:]}-{letter}"
+    expected = [value] if es_dni_valid(digits + letter) else []
+    assert _found(DETECTOR, f"DNI {value}.", "NATIONAL_ID") == expected
+
+
+@given(
+    st.integers(0, 9_999_999),
+    st.sampled_from("ABCDEFGHJNPQRSUVW"),
+    st.sampled_from(["", "-", " "]),
+)
+def test_cif_with_its_control_digit_is_detected_in_every_written_form(
+    number: int, letter: str, separator: str
+) -> None:
+    digits = f"{number:07d}"
+    control = next(digit for digit in string.digits if es_cif_valid(letter + digits + digit))
+    plain = digits + control
+    for value in (
+        f"{letter}{separator}{plain}",
+        f"{letter}{separator}{plain[:2]}.{plain[2:5]}.{plain[5:]}",
+    ):
+        assert _found(DETECTOR, f"CIF {value}.", "TAX_ID") == [value]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Write to 'juan.perez@example.com' now", "juan.perez@example.com"),
+        ("See juan.perez@example.com's inbox", "juan.perez@example.com"),
+    ],
+)
+def test_quotes_and_apostrophes_around_an_email_are_not_part_of_it(
+    text: str, expected: str
+) -> None:
+    assert _found(DETECTOR, text, "EMAIL") == [expected]
+
+
+@pytest.mark.parametrize("text", ["Write to '@example.com", "Write to o'@example.com"])
+def test_apostrophe_at_the_end_of_a_local_part_is_not_an_email(text: str) -> None:
+    assert _found(DETECTOR, text, "EMAIL") == []
+
+
+def test_email_between_words_of_a_script_written_without_spaces_is_detected() -> None:
+    text = "\u30e1\u30fc\u30eb\u306fjuan@example.com\u3067\u3059"
+    (surface,) = _found(DETECTOR, text, "EMAIL")
+    assert "juan@example.com" in surface
+
+
+@pytest.mark.parametrize(
+    ("text", "number"),
+    [
+        ("SSN: 078051120", "078051120"),
+        ("SSN 078 05 1120", "078 05 1120"),
+        ('{"ssn": "078051120"}', "078051120"),
+        ("Social Security number of the client: 078051120", "078051120"),
+        ("ss# 078051120", "078051120"),
+        ("user_ssn=078051120", "078051120"),
+        ("SSNs: 078051120", "078051120"),
+        ("SSN" + " " * 25 + "078051120", "078051120"),
+    ],
+)
+def test_ssn_without_hyphens_after_a_keyword_is_a_national_id(text: str, number: str) -> None:
+    spans = [span for span in DETECTOR.detect(text) if span.entity_type == "NATIONAL_ID"]
+    assert [(text[span.start : span.end], span.score) for span in spans] == [(number, 0.95)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "078051120",
+        "SSN (2024): 078051120",
+        "SSN\n078051120",
+        "SSN" + " " * 26 + "078051120",
+        "classn 078051120",
+        "ssnrecord 078051120",
+        "SSN: 000051120",
+        "SSN: 0780511201",
+        "SSN: 078-051120",
+    ],
+)
+def test_bare_nine_digits_without_a_keyword_right_before_are_not_a_national_id(text: str) -> None:
+    assert _found(DETECTOR, text, "NATIONAL_ID") == []
+
+
+def test_each_bare_ssn_needs_its_own_keyword() -> None:
+    assert _found(DETECTOR, "SSNs: 078051120, 219099999", "NATIONAL_ID") == ["078051120"]
+
+
+_PLAUSIBLE_SSNS = st.builds(
+    lambda area, group, serial: f"{area:03d}{group:02d}{serial:04d}",
+    st.integers(1, 899).filter(lambda area: area != 666),
+    st.integers(1, 99),
+    st.integers(1, 9999),
+)
+
+
+@given(_PLAUSIBLE_SSNS)
+def test_any_plausible_ssn_after_the_keyword_is_detected(digits: str) -> None:
+    assert us_ssn_plausible(digits)
+    assert _found(DETECTOR, f"SSN: {digits}", "NATIONAL_ID") == [digits]
+
+
+@pytest.mark.parametrize("text", ["Ref 782-77-8477 on file", "Ref (782-77-8477) on file"])
+def test_ssn_that_is_also_a_spanish_phone_is_resolved_as_a_national_id(text: str) -> None:
+    spans = DETECTOR.detect(text)
+    assert "PHONE" in {span.entity_type for span in spans}
+    assert [
+        (span.entity_type, text[span.start : span.end]) for span in resolve_overlaps(spans)
+    ] == [("NATIONAL_ID", "782-77-8477")]
+
+
+_URL_WITH_A_SECRET = "https://example.com/hook?key=" + "sk-" + "proj_" + "Ab1-" * 6
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/reset?user=juan.perez@example.com&token=abc123",
+        "https://juan:pw@example.com/x",
+        _URL_WITH_A_SECRET,
+        "http://192.0.2.44/status",
+        "https://example.com/pay/4111-1111-1111-1111",
+    ],
+    ids=["email", "credentials", "secret", "ip", "card"],
+)
+def test_rule_spans_inside_a_url_are_dropped_when_url_is_enabled(url: str) -> None:
+    text = f"See {url} now"
+    assert [(span.entity_type, text[span.start : span.end]) for span in WITH_URL.detect(text)] == [
+        ("URL", url)
+    ]
+
+
+def test_email_inside_a_url_is_an_email_when_url_is_disabled() -> None:
+    text = "See https://example.com/reset?user=juan.perez@example.com&token=abc123 now"
+    assert _found(DETECTOR, text) == ["juan.perez@example.com"]
+
+
+def test_value_that_only_partly_overlaps_a_url_still_wins_the_overlap() -> None:
+    text = "Card at https://example.com/pay/4111 1111 1111 1111 now"
+    spans = resolve_overlaps(WITH_URL.detect(text))
+    assert [(span.entity_type, text[span.start : span.end]) for span in spans] == [
+        ("CREDIT_CARD", "4111 1111 1111 1111")
+    ]
+
+
+_URL_TEXTS = st.lists(
+    st.sampled_from(
+        [
+            "https://example.com/",
+            "juan.perez@example.com",
+            "192.0.2.44",
+            "4111 1111 1111 1111",
+            "4111-1111-1111-1111",
+            "?u=",
+            "&",
+            "/",
+            " ",
+            "\n",
+        ]
+    ),
+    max_size=10,
+).map("".join)
+
+
+@given(_URL_TEXTS)
+def test_with_url_enabled_only_spans_inside_a_url_are_dropped(text: str) -> None:
+    with_url = WITH_URL.detect(text)
+    urls = [span for span in with_url if span.entity_type == "URL"]
+
+    def inside_a_url(span: Span) -> bool:
+        return any(url.start <= span.start and span.end <= url.end for url in urls)
+
+    others = [span for span in with_url if span.entity_type != "URL"]
+    assert not any(inside_a_url(span) for span in others)
+    assert others == [span for span in DETECTOR.detect(text) if not inside_a_url(span)]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            f"{PEM_BEGIN}\n{PEM_BODY}\n{PEM_BODY}\nQUJD\nwhy does it fail?",
+            f"{PEM_BEGIN}\n{PEM_BODY}\n{PEM_BODY}\nQUJD",
+        ),
+        (
+            f"{PEM_BEGIN}\r\n{PEM_BODY}  \r\nQUJD\r\nThanks, bye",
+            f"{PEM_BEGIN}\r\n{PEM_BODY}  \r\nQUJD",
+        ),
+        (
+            f"{RSA_PEM_BEGIN}\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0A1B2C3D\n\n"
+            f"{PEM_BODY}\nQUJD==\n\nThanks",
+            f"{RSA_PEM_BEGIN}\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0A1B2C3D\n\n"
+            f"{PEM_BODY}\nQUJD==",
+        ),
+        (
+            '{"key": "' + PEM_BEGIN + "\\n" + PEM_BODY + "\\nQUJD\\/REVG" + '"}',
+            PEM_BEGIN + "\\n" + PEM_BODY + "\\nQUJD\\/REVG",
+        ),
+        (f"{PEM_BEGIN}\nhello there\n{PEM_BODY}", PEM_BEGIN),
+        (f"Key: {PEM_BEGIN}\n{PEM_BODY}", f"{PEM_BEGIN}\n{PEM_BODY}"),
+    ],
+    ids=["prose-after", "crlf", "encrypted-headers", "json-escaped", "prose-first", "end-of-text"],
+)
+def test_pem_key_without_end_line_ends_where_its_base64_lines_end(text: str, expected: str) -> None:
+    assert _found(DETECTOR, text, "SECRET") == [expected]
+
+
+def test_two_pem_keys_without_end_lines_are_two_secrets() -> None:
+    text = f"{PEM_BEGIN}\n{PEM_BODY}\nsee above, and\n{PEM_BEGIN}\nQUJD"
+    assert _found(DETECTOR, text, "SECRET") == [f"{PEM_BEGIN}\n{PEM_BODY}", f"{PEM_BEGIN}\nQUJD"]
+
+
+def test_pem_begin_line_pairs_with_the_first_end_line_after_it() -> None:
+    text = f"{PEM_BEGIN}\n{PEM_BODY}\nand the full one:\n{_pem()}"
+    assert _found(DETECTOR, text, "SECRET") == [text]

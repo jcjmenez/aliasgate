@@ -4,6 +4,7 @@ import ipaddress
 import re
 import string
 import sys
+from bisect import bisect_right
 from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Final
@@ -48,6 +49,11 @@ _INTERNATIONAL_SOURCES: Final = frozenset(
     }
 )
 _SECRET_SCORE: Final = 1.0
+# Above the phone score: nine digits grouped 3-2-4 with hyphens are written as an SSN, even
+# when they also form a valid Spanish number.
+_SSN_SCORE: Final = 0.95
+# Python's \w does not match combining marks, so a decomposed accent would cut an address.
+_MARKS: Final = "\u0300-\u036f"
 
 
 def _ipv4_valid(candidate: str) -> bool:
@@ -78,6 +84,15 @@ def _card_valid(candidate: str) -> bool:
     return luhn_valid(candidate)
 
 
+def _without_dots(validate: Callable[[str], bool]) -> Callable[[str], bool]:
+    """Validator that ignores the dots grouping the digits, as in 12.345.678-Z."""
+
+    def check(candidate: str) -> bool:
+        return validate(candidate.replace(".", ""))
+
+    return check
+
+
 def _drop_last_group(separators: str, min_length: int) -> Callable[[str], str | None]:
     """Shortener that drops the last separator-delimited group, while at least `min_length`
     non-separator characters would remain."""
@@ -95,19 +110,29 @@ def _drop_last_group(separators: str, min_length: int) -> Callable[[str], str | 
 
 @dataclass(frozen=True, slots=True)
 class _Rule:
-    """A candidate pattern, an optional validator, and how to shorten a rejected candidate."""
+    """A candidate pattern, an optional validator, how to shorten a rejected candidate, and the
+    pattern group that is the candidate (0, the whole match, unless the match has context)."""
 
     entity_type: str
     pattern: re.Pattern[str]
     score: float
     validate: Callable[[str], bool] | None = None
     shorten: Callable[[str], str | None] | None = None
+    group: int = 0
 
 
 _RULES: Final[tuple[_Rule, ...]] = (
     _Rule(
         EMAIL,
-        re.compile(r"(?<![\w.%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?![\w-])"),
+        re.compile(
+            # Letters of any script. An apostrophe only between two other characters, so that
+            # quotes around an address stay outside it; (?<!\w') keeps the scan from starting
+            # again after every apostrophe, which would make it quadratic.
+            rf"(?<![\w.%+-])(?<![{_MARKS}])(?<!\w')"
+            rf"(?:[\w.%+-]|[{_MARKS}])+(?:'(?:[\w.%+-]|[{_MARKS}])+)*"
+            rf"@(?:[^\W_]|[{_MARKS}]|-)+(?:\.(?:[^\W_]|[{_MARKS}]|-)+)+"
+            rf"(?![\w-])(?![{_MARKS}])"
+        ),
         1.0,
     ),
     _Rule(
@@ -129,29 +154,50 @@ _RULES: Final[tuple[_Rule, ...]] = (
         _card_valid,
         _drop_last_group(" -", min_length=13),
     ),
+    # Spanish identifiers: the digits may be grouped with dots as Spanish numbers are written
+    # (12.345.678-Z); the lookarounds keep a dotted form out of a longer dotted number.
     _Rule(
         NATIONAL_ID,
-        re.compile(r"(?<![A-Za-z0-9])\d{8}[- ]?[A-Za-z](?![A-Za-z0-9])"),
+        re.compile(
+            r"(?<![A-Za-z0-9])(?<!\d\.)(?:\d{8}|\d{2}\.\d{3}\.\d{3})[- ]?[A-Za-z](?![A-Za-z0-9])"
+        ),
         1.0,
-        es_dni_valid,
+        _without_dots(es_dni_valid),
     ),
     _Rule(
         NATIONAL_ID,
-        re.compile(r"(?<![A-Za-z0-9])[XYZxyz][- ]?\d{7}[- ]?[A-Za-z](?![A-Za-z0-9])"),
+        re.compile(
+            r"(?<![A-Za-z0-9])[XYZxyz][- ]?(?:\d{7}|\d\.\d{3}\.\d{3})[- ]?[A-Za-z](?![A-Za-z0-9])"
+        ),
         1.0,
-        es_nie_valid,
+        _without_dots(es_nie_valid),
     ),
     _Rule(
         NATIONAL_ID,
         re.compile(r"(?<![\d-])\d{3}-\d{2}-\d{4}(?![\d-])"),
-        0.85,
+        _SSN_SCORE,
         us_ssn_plausible,
     ),
     _Rule(
+        NATIONAL_ID,
+        # Nine digits without hyphens are an SSN only right after a keyword on the same line,
+        # with no digit in between. The span is the number (group 1), not the keyword.
+        re.compile(
+            r"(?i)(?<![a-z0-9])(?:ssns?|ss\#|social[ \t]+security)(?![a-z])"
+            r"[^\d\r\n]{0,25}?(?<!\d)(\d{3}[ ]?\d{2}[ ]?\d{4})(?![\d-])"
+        ),
+        _SSN_SCORE,
+        us_ssn_plausible,
+        group=1,
+    ),
+    _Rule(
         TAX_ID,
-        re.compile(r"(?<![A-Za-z0-9])[A-Za-z]\d{7}[0-9A-Ja-j](?![A-Za-z0-9])"),
+        re.compile(
+            r"(?<![A-Za-z0-9])[A-Za-z][- ]?(?:\d{7}[0-9A-Ja-j]|\d{2}\.\d{3}\.\d{3})"
+            r"(?![A-Za-z0-9])(?!\.\d)"
+        ),
         1.0,
-        es_cif_valid,
+        _without_dots(es_cif_valid),
     ),
     _Rule(
         IP_ADDRESS,
@@ -192,21 +238,27 @@ _RULES: Final[tuple[_Rule, ...]] = (
 
 _PEM_BEGIN: Final = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 _PEM_END: Final = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+# A line break, or its JSON escape: a key can sit inside a JSON document that is one string.
+_PEM_BREAK: Final = re.compile(r"\r?\n|\\r\\n|\\n")
+_PEM_HEADER: Final = re.compile(r"(?:Proc-Type|DEK-Info):[^\r\n\\]*")
+# Group 1 is the base64 of one line (with \/, the JSON escape of /); the line may end in spaces
+# or tabs and must end at a break, at the end of the text or before a closing quote.
+_PEM_BODY_LINE: Final = re.compile(r"((?:[A-Za-z0-9+/=]|\\/)+)[ \t]*(?=\r?\n|\\r\\n|\\n|\Z|[\"'])")
 
 
 def _scan(rule: _Rule, text: str) -> Iterator[tuple[int, int]]:
     """Yield (start, end) of every accepted candidate, leftmost first.
 
     A rejected candidate is shortened while that is possible; if no version validates, the
-    search resumes one character after its start, so a valid value that begins inside a
-    rejected candidate is still found.
+    search resumes one character after the start of the match, so a valid value that begins
+    inside a rejected candidate is still found.
     """
     position = 0
     while (match := rule.pattern.search(text, position)) is not None:
-        start = match.start()
-        length = _accepted_length(rule, match.group())
+        start = match.start(rule.group)
+        length = _accepted_length(rule, match.group(rule.group))
         if length is None:
-            position = start + 1
+            position = match.start() + 1
         else:
             yield start, start + length
             position = start + length
@@ -224,25 +276,57 @@ def _accepted_length(rule: _Rule, candidate: str) -> int | None:
 
 
 def _scan_pem(text: str) -> Iterator[tuple[int, int]]:
-    """Yield each private key block from its BEGIN line to the first END line after it.
+    """Yield each private key block from its BEGIN line to the first END line after it, or,
+    when no END line follows, to the end of its base64 lines.
 
-    Same result as a non-greedy DOTALL pattern, in linear time: once a BEGIN line has no END
-    line after it, no later BEGIN line has one either.
+    Linear: once a BEGIN line has no END line after it, no later BEGIN line has one either, so
+    the END line is searched for only until it is missing once.
     """
     position = 0
+    end_lines_left = True
     while (begin := _PEM_BEGIN.search(text, position)) is not None:
-        end = _PEM_END.search(text, begin.end())
-        if end is None:
-            return
-        yield begin.start(), end.end()
-        position = end.end()
+        end = _PEM_END.search(text, begin.end()) if end_lines_left else None
+        if end is not None:
+            stop = end.end()
+        else:
+            end_lines_left = False
+            stop = _pem_body_end(text, begin.end())
+        yield begin.start(), stop
+        position = stop
+
+
+def _pem_body_end(text: str, position: int) -> int:
+    """End of a key without END line: the header lines of an encrypted key and the blank line
+    after them, then each line made only of base64 characters."""
+    end = position
+    has_headers = False
+    while (newline := _PEM_BREAK.match(text, end)) and (
+        header := _PEM_HEADER.match(text, newline.end())
+    ):
+        end = header.end()
+        has_headers = True
+    cursor = end
+    if (
+        has_headers
+        and (newline := _PEM_BREAK.match(text, cursor))
+        and _PEM_BREAK.match(text, newline.end())
+    ):
+        cursor = newline.end()
+    while (newline := _PEM_BREAK.match(text, cursor)) and (
+        line := _PEM_BODY_LINE.match(text, newline.end())
+    ):
+        end = line.end(1)
+        cursor = line.end()
+    return end
 
 
 class RuleDetector:
     """Finds structured identifiers with patterns plus checksum or library validation.
 
     Deterministic: the same text always yields the same spans, sorted by (start, end). Overlaps
-    between rules are kept; resolving them is the resolver's job.
+    between rules are kept, and resolving them is the resolver's job, with one exception: when
+    URL is enabled, a span that lies entirely inside a URL span is dropped, so the URL is
+    replaced whole.
     """
 
     name = "rules"
@@ -267,6 +351,7 @@ class RuleDetector:
             raise ValueError("phone_regions must not be empty when PHONE is enabled")
         self._rules = tuple(rule for rule in _RULES if rule.entity_type in enabled)
         self._secrets = SECRET in enabled
+        self._urls = URL in enabled
         self._phone_regions = regions if PHONE in enabled else ()
 
     def detect(self, text: str) -> list[Span]:
@@ -286,7 +371,7 @@ class RuleDetector:
             for start, end in self._phone_offsets(text)
         )
         spans.sort(key=lambda span: (span.start, span.end))
-        return spans
+        return _without_spans_inside_urls(spans) if self._urls else spans
 
     def _phone_offsets(self, text: str) -> list[tuple[int, int]]:
         """Numbers written with an international prefix (+ or the region's IDD) need only be
@@ -300,6 +385,22 @@ class RuleDetector:
                 if _has_international_prefix(match.raw_string, region):
                     offsets[(match.start, match.end)] = None
         return sorted(offsets)
+
+
+def _without_spans_inside_urls(spans: list[Span]) -> list[Span]:
+    """`spans` (sorted by start) without the non-URL spans that lie entirely inside a URL span.
+
+    URL spans never overlap each other, so only the last URL starting at or before a span can
+    contain it.
+    """
+    urls = [span for span in spans if span.entity_type == URL]
+    starts = [url.start for url in urls]
+
+    def inside_a_url(span: Span) -> bool:
+        index = bisect_right(starts, span.start) - 1
+        return index >= 0 and span.end <= urls[index].end
+
+    return [span for span in spans if span.entity_type == URL or not inside_a_url(span)]
 
 
 def _phone_matches(

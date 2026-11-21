@@ -6,6 +6,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from aliasgate.detectors.dictionary import DictionaryDetector, Term
+from aliasgate.detectors.rules import DEFAULT_RULE_TYPES, RuleDetector
 from aliasgate.engine import (
     DetectionError,
     PseudonymizedBatch,
@@ -581,3 +582,16 @@ def test_appending_texts_keeps_every_placeholder_variant_and_surface(
             entity.variant,
             entity.surface,
         )
+
+
+def test_with_url_enabled_a_url_holding_an_email_is_replaced_whole() -> None:
+    text = (
+        "Reset at https://example.com/r?u=juan.perez@example.com "
+        "or write to juan.perez@example.com."
+    )
+    engine = Pseudonymizer([RuleDetector(enabled_types=DEFAULT_RULE_TYPES | {"URL"})])
+    batch = engine.pseudonymize([text])
+    # Propagation of the email does not reach inside the URL: the URL span has the higher
+    # priority.
+    assert batch.texts == ("Reset at [URL_1] or write to [EMAIL_1].",)
+    assert restore(batch.texts[0], batch.mapping) == text

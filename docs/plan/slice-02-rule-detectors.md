@@ -90,6 +90,13 @@ detection is the exception because it uses a library matcher.
 | `SECRET` | see below | none | 1.0 |
 | `PHONE` | `phonenumbers.PhoneNumberMatcher` | see below | 0.9 |
 
+**Changed in [slice 14](slice-14-rule-gaps.md).** The SSN score is 0.95, above the phone score,
+and a second SSN rule finds nine digits without hyphens after a keyword. DNI, NIE and CIF
+accept dotted digits, and a CIF a hyphen or space after its letter. Emails accept letters of
+any script and an inner apostrophe. A PEM key without its END line ends at its last base64
+line. With `URL` enabled, `detect` drops the spans that lie entirely inside a URL span. The
+patterns of this table are the v0.1.0 starting points; slice 14 has the current ones.
+
 **IBAN and trailing words.** The greedy pattern can swallow a following upper-case word. If the
 full candidate fails `iban_valid`, retry with the candidate shortened group by group from the
 right (drop the last space-separated group) until it validates or fewer than 15 characters

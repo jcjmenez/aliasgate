@@ -25,7 +25,7 @@ Read [AGENTS.md](../../AGENTS.md) first. Its rules apply to every slice.
 | 11 | [slice-11-evaluation.md](slice-11-evaluation.md) | Evaluation harness and CI recall gate | 04 | done |
 | 12 | [slice-12-cli-docker-release.md](slice-12-cli-docker-release.md) | CLI, Docker image, usage docs, v0.1.0 | 09, 10, 11 | done |
 | 13 | [slice-13-dictionary-aliases.md](slice-13-dictionary-aliases.md) | Dictionary aliases, variant placeholders | 12 | done |
-| 14 | [slice-14-rule-gaps.md](slice-14-rule-gaps.md) | Rule coverage gaps | 13 | planned |
+| 14 | [slice-14-rule-gaps.md](slice-14-rule-gaps.md) | Rule coverage gaps | 13 | done |
 
 Slices 02 and 03 can be done in either order. Slices 09 and 11 can be done any time after 04.
 The first usable end-to-end product exists after slice 06; the first one worth deploying, after
@@ -66,13 +66,13 @@ valid unless the column says otherwise.
 
 | Type | Valid | Invalid (same shape, wrong checksum or range) |
 |---|---|---|
-| `EMAIL` | `juan.perez@example.com`, `a.b+tag@mail.example.org` | `juan.perez@`, `@example.com` |
+| `EMAIL` | `juan.perez@example.com`, `a.b+tag@mail.example.org`, `josé@example.com`, `o'connor@example.com`, `juan@bücher.example` | `juan.perez@`, `@example.com` |
 | `IBAN` | `ES91 2100 0418 4502 0005 1332`, `ES9121000418450200051332`, `DE89 3704 0044 0532 0130 00`, `GB82 WEST 1234 5698 7654 32` | `ES91 2100 0418 4502 0005 1333` |
 | `CREDIT_CARD` | `4111 1111 1111 1111`, `5555-5555-5555-4444`, `378282246310005` | `4111 1111 1111 1112` |
-| `NATIONAL_ID` (ES DNI) | `12345678Z` | `12345678A` |
-| `NATIONAL_ID` (ES NIE) | `X1234567L` | `X1234567A` |
-| `NATIONAL_ID` (US SSN) | `078-05-1120` | `000-12-3456`, `666-12-3456`, `900-12-3456` |
-| `TAX_ID` (ES CIF) | `A58818501` | `A58818502` |
+| `NATIONAL_ID` (ES DNI) | `12345678Z`, `12.345.678-Z` | `12345678A`, `12.345.678-A` |
+| `NATIONAL_ID` (ES NIE) | `X1234567L`, `X-1.234.567-L` | `X1234567A`, `X-1.234.567-A` |
+| `NATIONAL_ID` (US SSN) | `078-05-1120`, and `078051120` after the keyword `SSN` | `000-12-3456`, `666-12-3456`, `900-12-3456` |
+| `TAX_ID` (ES CIF) | `A58818501`, `B-58818501`, `B 58818501`, `B-58.818.501`, `P2800000H` | `A58818502`, `B-58.818.502` |
 | `PHONE` | `+34 612 345 678`, `+1 415 555 2671` | `+34 12`, `12345` |
 | `IP_ADDRESS` | `192.0.2.44`, `2001:db8::8a2e:370:7334` | `999.1.1.1` |
 | `PERSON` (for fakes and dictionary tests) | `Juan Pérez`, `Alice Johnson`, `María-José O'Connor` | – |

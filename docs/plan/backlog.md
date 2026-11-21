@@ -81,29 +81,23 @@ fetcher), to limit the exfiltration path described in the threat model, risk 4.
 National identifiers and tax numbers of other countries, passport numbers, licence plates,
 national phone formats, more secret formats. One rule, its checksum and its vectors per change.
 
-Known gaps in the rules of slice 02, each a missed detection (lower-case IBANs were fixed in
-slice 11):
+Lower-case IBANs were fixed in slice 11. [Slice 14](slice-14-rule-gaps.md) fixed the gaps
+listed here until then: Spanish identifiers with a separator or dots, emails with non-ASCII
+letters or an apostrophe, bare SSNs after a keyword, PEM keys without END line, the SSN replaced
+as `PHONE`, and with `URL` enabled, an email or a token inside a URL. Still open, each a value
+forwarded unchanged:
 
-- A Spanish CIF written with a hyphen after the letter (`B-58818501`), common on invoices.
-- A US SSN written without hyphens (`078051120`): nine bare digits are too ambiguous for the
-  current rule.
-- Email addresses with a non-ASCII local part (`josé@example.com`).
-- A private key pasted without its `-----END … PRIVATE KEY-----` line: the PEM rule needs both
-  lines, so the body is forwarded.
-- With `URL` enabled, an email inside a URL wins the overlap (score 1.0 against 0.9) and the
-  rest of the URL is not pseudonymised.
-
-Found in slice 11, a wrong type rather than a miss: a US SSN whose nine digits also form a valid
-Spanish number (`782-77-8477`) is replaced as `PHONE`, because the phone score (0.9) beats the
-SSN score (0.85), and the phone span may include an opening parenthesis. The value is covered,
-so nothing leaks, but the model sees the wrong type. Sixteen English examples of the synthetic
-corpus show it.
-
-**Cut into [slice 14](slice-14-rule-gaps.md).** Every gap above, the type conflict, and the
-forms found next to them: Spanish identifiers with dots or a space, emails with an apostrophe or
-a non-ASCII domain. Slice 14 removes the fixed items from this section and adds the two it
-found (a dictionary term inside a URL, and a value that only partly overlaps a URL). Other
-countries' identifiers, passports, licence plates, phone formats and secret formats stay here.
+- A US SSN without hyphens and without a keyword right before it, for example in a table column
+  whose header row says `SSN`. Nine bare digits are too ambiguous on their own; this needs
+  column-aware detection.
+- A PEM private key whose lines were joined with spaces and that has no END line: only its
+  BEGIN line is replaced.
+- With `URL` enabled, a dictionary term inside a URL beats the URL, because dictionaries rank
+  above rules, so the rest of that URL is forwarded. Found in slice 14.
+- A value that only partly overlaps a URL (a card number that starts at the end of a URL path
+  and goes on after a space) wins, and the rest of the URL is forwarded. Replacing both needs
+  the resolver to merge overlapping spans, which architecture §3.3 does not do. Found in slice
+  14.
 
 ## 10. Request fields forwarded unchanged
 

@@ -7,6 +7,27 @@ change the configuration or the command line.
 
 ## [Unreleased]
 
+### Changed
+
+- A US SSN whose nine digits also form a valid Spanish number (`782-77-8477`) is replaced as
+  `NATIONAL_ID`, not `PHONE`: the SSN rule's score is now 0.95, above the phone score.
+- With `URL` enabled, a URL is replaced whole even when an email, a token, credentials or
+  another rule value lies inside it. Until now the inner value was replaced and the rest of the
+  URL was forwarded.
+
+### Fixed
+
+Values that the rules missed and forwarded unchanged:
+
+- Spanish DNI, NIE and CIF with the digits grouped by dots (`12.345.678-Z`, `X-1.234.567-L`,
+  `B-58.818.501`), and a CIF with a hyphen or a space after its letter (`B-58818501`).
+- Email addresses with letters outside ASCII (`josé@example.com`, `juan@bücher.example`) or an
+  apostrophe in the local part (`o'connor@example.com`, of which only `connor@example.com` was
+  replaced).
+- A US SSN without hyphens (`078051120`, `078 05 1120`) right after the keyword `SSN`, `SSNs`,
+  `SS#` or `social security`.
+- A PEM private key pasted without its END line, now replaced up to its last base64 line.
+
 ## [0.2.0] - 2026-11-21
 
 Dictionary aliases. A dictionary without aliases gives the same placeholders and answers as
