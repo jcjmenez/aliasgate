@@ -62,6 +62,8 @@ detection:
     overlap_words: 50        # punctuation mark); the model accepts at most 384 per window
     cache_entries: 4096      # texts whose results are kept in memory; 0 disables the cache
   propagate: true            # replace other occurrences of detected values too
+  person_tokens: true        # "Johnson" or "Sr. Pérez" alone becomes a variant of a detected
+                             # full name ([PERSON_1_B]), where it starts upper-case
   min_propagation_length: 3
 
 policy:

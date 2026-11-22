@@ -111,6 +111,20 @@ If a change to a rule breaks the gate, fix the rule, not the threshold. Changes 
 detection should include before and after numbers from this command (see
 [CONTRIBUTING.md](../CONTRIBUTING.md)).
 
+`tests/eval/test_person_gate.py` runs the [person corpus](#the-person-corpus) with
+`tests/eval/corpus/persons.yaml` (a dictionary of its full names) and the default
+configuration otherwise, so person name linking is on. It groups the examples by category and
+requires, for each language:
+
+- in `full`, `first`, `last`, `title`, `before`, `run`, `possessive`, `word`, `shared-last` and
+  `shared-first`: every letter and digit of every `PERSON` mention covered by a predicted span
+  (the space between two words of a run replaced one by one does not count), and no wrong pair;
+- in the first eight of those: `link_recall` of 1.0;
+- in `word`: no predicted span outside the gold spans, so the lower-case common word stays;
+- no round-trip failure in the whole corpus.
+
+`other`, `sentence`, `lower` and `org` are measured below, not gated.
+
 ## Your own corpus
 
 A corpus is a JSON Lines file, UTF-8, one example per line:
@@ -276,7 +290,12 @@ gliner 0.2.30, transformers 5.22.2 and torch 2.15.0 on an Apple M5 Pro CPU. Both
 | `ADDRESS` | 61 | 71 | 1.000 | 0.984 | 0.845 | 60 | 65 | 0.983 | 0.967 | 0.892 |
 
 Leak rate for these three types: 0.0360 in English (340 of 9,455 characters) and 0.0224 in
-Spanish (285 of 12,738). The model over-predicts, as the precision column shows: 30 of the 182
+Spanish (285 of 12,738). Re-measured on 2026-11-22 with person name linking (slice 16, on by
+default): nothing changed in English. In Spanish one example changed: the model tags a company
+named after a person (gold `ORG`) as `PERSON` twice, once in part and once whole in lower
+case, so two more of its words become name tokens and are replaced in the first mention. The
+Spanish leak rate fell to 0.0217 (277 of 12,738), and Spanish `PERSON` has 317 predicted spans
+and a `precision_exact` of 0.833. The rules-only numbers above did not change. The model over-predicts, as the precision column shows: 30 of the 182
 English examples without a name, organisation or address had a predicted span of one of those
 types (16.5%), and 21 of 182 in Spanish (11.5%). Exact recall for English `ORG` is low because
 company names made of several surnames ("X, Y and Z") or of two hyphenated surnames are often
@@ -347,3 +366,89 @@ uv run python -m aliasgate.eval --config tests/eval/corpus/persons.yaml tests/ev
 uv sync --extra ml
 ALIASGATE_DETECTION__ML__ENABLED=true uv run python -m aliasgate.eval --types PERSON,ORG tests/eval/corpus/persons.*.jsonl
 ```
+
+These numbers are with `detection.person_tokens: false`, which gives the same output as the
+code they were measured with.
+
+### Person corpus with person name linking
+
+Measured on 2026-11-22 with the same commands and files, with person name linking on (slice
+16, `detection.person_tokens: true`, the default). The shorter forms of a detected full name
+are now replaced as its variants where they start with an upper-case letter.
+
+**With the dictionary of full names** (what CI runs). The leak rate fell from 0.3625 to 0.0425
+in English (334 of 7,865 characters) and from 0.2735 to 0.0339 in Spanish (368 of 10,848).
+`PERSON` accounts for 159 of them in English and 173 in Spanish: the shorter forms of `lower`,
+and the spaces between the words of a run or of a compound first name, which are replaced one
+word at a time. The rest are the organisation names of `org`, which the dictionary does not
+hold. There was no round-trip failure.
+
+| Type | en: gold | en: predicted | en: `recall_overlap` | en: `recall_exact` | en: `precision_exact` | es: gold | es: predicted | es: `recall_overlap` | es: `recall_exact` | es: `precision_exact` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `PERSON` | 770 | 830 | 0.974 | 0.922 | 0.855 | 770 | 835 | 0.974 | 0.918 | 0.847 |
+| `ORG` | 20 | 0 | 1.000 | 0.000 | – | 20 | 0 | 1.000 | 0.000 | – |
+
+| Type | Language | `mentions` | `placed` | `same_pairs` | `linked` | `wrong` | `link_recall` | `link_precision` |
+|---|---|---|---|---|---|---|---|---|
+| `PERSON` | en | 770 | 750 | 430 | 350 | 30 | 0.814 | 0.921 |
+| `PERSON` | es | 770 | 750 | 430 | 350 | 30 | 0.814 | 0.921 |
+| `ORG` | en | 20 | 20 | 0 | 0 | 0 | 1.000 | 1.000 |
+| `ORG` | es | 20 | 20 | 0 | 0 | 0 | 1.000 | 1.000 |
+
+`ORG` is placed and overlapped now because the surname inside each organisation name is
+replaced as the person's variant. By category (`placed` of `mentions`, `PERSON` characters
+leaked of gold, and pairs as `same_pairs` / `linked` / `wrong`):
+
+| Category | en: placed | en: `PERSON` leaked | en: same / linked / wrong | es: placed | es: `PERSON` leaked | es: same / linked / wrong |
+|---|---|---|---|---|---|---|
+| `full` | 60 of 60 | 0 of 761 | 20 / 20 / 0 | 60 of 60 | 0 of 1270 | 20 / 20 / 0 |
+| `first` | 60 of 60 | 0 of 583 | 30 / 30 / 0 | 60 of 60 | 1 of 812 | 30 / 30 / 0 |
+| `last` | 60 of 60 | 0 of 592 | 30 / 30 / 0 | 60 of 60 | 0 of 797 | 30 / 30 / 0 |
+| `title` | 40 of 40 | 0 of 392 | 20 / 20 / 0 | 40 of 40 | 0 of 535 | 20 / 20 / 0 |
+| `before` | 40 of 40 | 0 of 381 | 20 / 20 / 0 | 40 of 40 | 0 of 543 | 20 / 20 / 0 |
+| `run` | 60 of 60 | 40 of 878 | 60 / 60 / 0 | 60 of 60 | 42 of 946 | 60 / 60 / 0 |
+| `possessive` | 40 of 40 | 0 of 391 | 20 / 20 / 0 | 40 of 40 | 0 of 556 | 20 / 20 / 0 |
+| `shared-last` | 100 of 100 | 0 of 852 | 80 / 40 / 0 | 100 of 100 | 2 of 1240 | 80 / 40 / 0 |
+| `shared-first` | 100 of 100 | 0 of 874 | 80 / 40 / 0 | 100 of 100 | 0 of 1264 | 80 / 40 / 0 |
+| `other` | 50 of 50 | 0 of 446 | 10 / 10 / 30 | 50 of 50 | 0 of 576 | 10 / 10 / 30 |
+| `word` | 40 of 40 | 0 of 321 | 20 / 20 / 0 | 40 of 40 | 0 of 473 | 20 / 20 / 0 |
+| `sentence` | 40 of 40 | 0 of 299 | 20 / 20 / 0 | 40 of 40 | 0 of 416 | 20 / 20 / 0 |
+| `lower` | 20 of 40 | 119 of 382 | 0 / 0 / 0 | 20 of 40 | 128 of 557 | 0 / 0 / 0 |
+| `org` | 40 of 40 | 0 of 409 | 20 / 20 / 0 | 40 of 40 | 0 of 542 | 20 / 20 / 0 |
+
+What the categories outside the gate show:
+
+- `other`: all 30 wrong pairs. The second person, named only by a word of the first one's
+  name, gets the first person's variant.
+- `sentence`: 20 false positives per language, one per example: the common word at the start
+  of a sentence (`Will you check it?`, `Rosa es el color…`) is replaced too.
+- `lower`: the lower-case shorter forms (`thanks alice`) still leak.
+- `org`: the surname inside the organisation name is replaced as the person's variant, and the
+  rest of the name leaks (175 of the 304 `ORG` characters left in English, 195 of 321 in
+  Spanish).
+- In `shared-last` and `shared-first`, the word the two persons share gets a number of its own,
+  so it links to neither: 40 of the 80 pairs are linked, and none is wrong.
+
+**With the ML layer, without the dictionary** (`--types PERSON,ORG`, same model and settings
+as above). Both files took 34 seconds, model loading included. The leak rate fell from 0.2768
+to 0.0201 in English (158 of 7,865 characters) and from 0.2300 to 0.0168 in Spanish (182 of
+10,848), with no round-trip failure.
+
+| Type | en: gold | en: predicted | en: `recall_overlap` | en: `recall_exact` | en: `precision_exact` | es: gold | es: predicted | es: `recall_overlap` | es: `recall_exact` | es: `precision_exact` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `PERSON` | 770 | 793 | 0.974 | 0.922 | 0.895 | 770 | 805 | 0.974 | 0.917 | 0.877 |
+| `ORG` | 20 | 123 | 1.000 | 1.000 | 0.163 | 20 | 116 | 1.000 | 1.000 | 0.172 |
+
+| Type | Language | `mentions` | `placed` | `same_pairs` | `linked` | `wrong` | `link_recall` | `link_precision` |
+|---|---|---|---|---|---|---|---|---|
+| `PERSON` | en | 770 | 750 | 430 | 322 | 30 | 0.749 | 0.915 |
+| `PERSON` | es | 770 | 750 | 430 | 350 | 30 | 0.814 | 0.921 |
+| `ORG` | en | 20 | 20 | 0 | 0 | 0 | 1.000 | 1.000 |
+| `ORG` | es | 20 | 20 | 0 | 0 | 0 | 1.000 | 1.000 |
+
+By category, the ML run matches the dictionary run except in four places. In English `run`, 39
+characters leak and 32 of the 60 pairs are linked: where the model does not find the
+three-word name whole, it finds two of its words as one person and a shorter form elsewhere
+(`Adam Wise` for `Adam Joshua Wise`) as a second person, and the two get different numbers.
+In Spanish, where the model misses part of a full name, 9 characters of `first` and 11 of
+`before` leak, and `run` leaks 32 characters instead of 42.

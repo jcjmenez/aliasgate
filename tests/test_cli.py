@@ -166,6 +166,17 @@ def test_check_with_the_example_configuration_prints_a_summary_and_exits_0(
         assert term not in out
 
 
+@pytest.mark.parametrize(("value", "shown"), [("true", "on"), ("false", "off")])
+def test_check_prints_whether_person_tokens_are_on_after_propagation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str, shown: str
+) -> None:
+    config = tmp_path / "aliasgate.yaml"
+    config.write_text(f"detection:\n  person_tokens: {value}\n", encoding="utf-8")
+    code, out, _ = _run(capsys, "check", "--config", str(config))
+    assert code == 0
+    assert f"propagation: on\nperson tokens: {shown}\n" in out
+
+
 def test_check_summary_lists_passthrough_entries_and_the_ml_model(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

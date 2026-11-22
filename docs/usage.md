@@ -86,6 +86,7 @@ passthrough: none
 listen: 127.0.0.1 port 8080
 policy: unsupported_content=block, strip_user_identifiers=on, tool_definitions=on, leak_audit=on
 propagation: on
+person tokens: on
 metrics: on
 ```
 
@@ -385,7 +386,7 @@ Measured on an Apple M5 Pro CPU: about 1.5 GB of resident memory per process, ab
 start with the model cached, and about 140 ms for 200 words. One inference runs at a time per
 process.
 
-### 6.3 Propagation
+### 6.3 Propagation and person names
 
 With `detection.propagate` (on by default), every value detected once is also replaced
 everywhere else in the same request, ignoring case and whitespace, when it is at least
@@ -395,6 +396,31 @@ and missed in the next. Keep it on. If short values cause replacements you do no
 
 With propagation off, a value detected in one place and missed in another stays in the outbound
 body, and the leak audit (section 9) rejects the request with `leak_audit_failed`.
+
+With `detection.person_tokens` (on by default), the shorter forms of a detected person's name
+are protected too. Once a full name such as `Alice Johnson` or `Juan Pérez García` is detected
+(by the dictionary or by the ML layer), each word of it that stands alone elsewhere in the
+request is replaced as a variant of that person: `Johnson`, `Ms. Johnson`, `Alice` and
+`Sr. Pérez` become `[PERSON_1_B]`, `[PERSON_1_C]` and so on, and each is restored as written.
+A run of the name's words (`Juan Pérez`) that a detector found also becomes a variant instead
+of getting a number of its own.
+
+- It needs a detected full name: a name with at least two words that are not a title
+  (`Ms.`, `Sr.`, `Dña.`), a particle (`de`, `del`, `van`) or an initial (`J.`), and that are at
+  least `min_propagation_length` characters long. A detected `Dr. Smith` or `J. R. Smith` has
+  only one such word, so `Smith` alone is not replaced.
+- A word is replaced only where it starts with an upper-case letter, so `la mesa` stays as
+  written next to `Pedro Mesa`, and so does `it will` next to `Will Stone`.
+- A word that two persons of the request share (`Smith` for `Bob Smith` and `Alice Smith`) gets
+  a number of its own instead of either person's.
+- Words nobody detected are replaced by the propagation step, so with `propagate: false` only
+  the shorter forms a detector found are linked, and the others stay in the outbound body.
+- The English first name `Don` is read as the title. Words on the allow list are never
+  replaced.
+
+Set `detection.person_tokens: false` (or `ALIASGATE_DETECTION__PERSON_TOKENS=false`) to turn it
+off: shorter forms are then replaced only where a detector finds them, with a number of their
+own.
 
 ## 7. What your users will notice
 
@@ -413,6 +439,16 @@ body, and the leak audit (section 9) rejects the request with `leak_audit_failed
   then reads that variant's name. Bracketed text that looks like a placeholder with a letter,
   such as `[Step 1 a]`, is replaced as a `LITERAL` and restored exactly, like `[PERSON_1]` in a
   user's text.
+- **Shorter forms of a name are linked.** With `person_tokens` on (section 6.3), `Johnson` and
+  `Alice` after `Alice Johnson` reach the model as `[PERSON_1_B]` and `[PERSON_1_C]`, and each is
+  restored as written. Some effects to expect:
+  - a capitalised word that equals a word of a detected name is replaced too, for example at
+    the start of a sentence (`Will you check it?` next to `Will Stone`);
+  - lower-case shorter forms (`thanks alice`) are not replaced;
+  - in a later message, a different person who shares a word with an earlier one (another
+    `Alice`) gets the earlier person's variant, because earlier placeholders never change;
+  - an organisation named after a person (`Vidal Logistics` next to `Lucía Vidal`) may show
+    that person's variant for the shared word.
 - **Tasks that degrade.** Anything that depends on the real value: guessing gender or origin
   from a name, arithmetic on a masked number, facts about a real company, provider-side tools
   such as hosted web search, which only see placeholders. Models sometimes comment on the
@@ -427,7 +463,9 @@ body, and the leak audit (section 9) rejects the request with `leak_audit_failed
 - **Preserved thinking.** Current Claude models reject a replayed thinking block when anything
   before it changed. Earlier turns are pseudonymised identically on every turn, with three
   exceptions, each of which changes an earlier message on the next turn: propagation, when a
-  later turn reveals an entity an earlier text contained undetected; a placeholder variant the
+  later turn reveals an entity an earlier text contained undetected (this includes a later
+  turn that names a person whose surname or first name an earlier message held alone); a
+  placeholder variant the
   model wrote (`[person_1]`), which is restored and then sent again as `[PERSON_1]`; and an
   unresolved placeholder in an assistant message (`[PERSON_9]`), which is sent again as
   `[LITERAL_1]`. The provider then rejects the thinking blocks after the change.
@@ -481,7 +519,9 @@ and text the gateway still held back is never sent.
 Before forwarding, the **leak audit** searches every string value of the outbound body, not only
 the fields the gateway pseudonymised, for every detected value of at least
 `min_propagation_length` characters: as a whole term ignoring case, and after Unicode NFKC
-normalisation and case folding. If one is found, the request is rejected with
+normalisation and case folding. A word of a person's name that nobody detected (section 6.3)
+is searched only where it starts with an upper-case letter, as it is replaced, so `la mesa` next
+to `Pedro Mesa` is not reported. If one is found, the request is rejected with
 `leak_audit_failed` and nothing is sent. It is on by default (`policy.leak_audit`).
 
 After restoring, placeholders in the answer that are not in the request's mapping are left as

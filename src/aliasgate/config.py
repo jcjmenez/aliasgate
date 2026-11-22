@@ -205,7 +205,11 @@ class MLSettings(_Section):
 
 
 class DetectionSettings(_Section):
-    """Detection layers, allow list and propagation."""
+    """Detection layers, allow list, propagation and person name tokens.
+
+    With `person_tokens`, the shorter forms of a detected person's name become variants of
+    that person (architecture §4.3).
+    """
 
     rules: RulesSettings = RulesSettings()
     dictionary: DictionarySettings = DictionarySettings()
@@ -213,6 +217,7 @@ class DetectionSettings(_Section):
     ml: MLSettings = MLSettings()
     propagate: bool = True
     min_propagation_length: int = Field(default=3, ge=1)
+    person_tokens: bool = True
 
 
 class PolicySettings(_Section):

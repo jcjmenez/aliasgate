@@ -22,6 +22,22 @@ change the configuration or the command line.
   shows that every shorter form of a detected full name (a first name, a surname, a title with
   a surname) is forwarded unchanged today.
 
+### Changed
+
+- A shorter form of a person's name that a detector found (`Pérez` or `Juan Pérez` after
+  `Juan Pérez García`) is now a variant of the full name (`[PERSON_1_B]`) instead of getting a
+  number of its own, which changes the numbering. `detection.person_tokens: false` turns person
+  name linking off.
+
+### Fixed
+
+- Shorter forms of a detected person's name, such as a first name, a surname or a title with a
+  surname (`Alice`, `Johnson`, `Ms. Johnson`, `Sr. Pérez` after `Alice Johnson` or
+  `Juan Pérez García`), were forwarded unchanged. They are now replaced as variants of the
+  person where they start with an upper-case letter (`detection.person_tokens`, on by default).
+  On the person corpus with a dictionary of full names, the leak rate fell from 0.3625 to
+  0.0425 in English and from 0.2735 to 0.0339 in Spanish.
+
 ## [0.3.0] - 2026-11-21
 
 Rule coverage gaps. The rules find identifiers that 0.2.0 forwarded unchanged, and with `URL`

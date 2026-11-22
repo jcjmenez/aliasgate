@@ -58,6 +58,7 @@ DEFAULTS = {
         },
         "propagate": True,
         "min_propagation_length": 3,
+        "person_tokens": True,
     },
     "policy": {
         "unsupported_content": "block",
@@ -152,6 +153,17 @@ def test_metrics_and_the_leak_audit_can_be_turned_off(tmp_path: Path) -> None:
     path = _config(tmp_path, "metrics:\n  enabled: false\npolicy:\n  leak_audit: false\n")
     settings = load_settings(path, env={})
     assert (settings.metrics.enabled, settings.policy.leak_audit) == (False, False)
+
+
+def test_person_tokens_can_be_turned_off_in_the_file_and_from_the_environment(
+    tmp_path: Path,
+) -> None:
+    path = _config(tmp_path, "detection:\n  person_tokens: false\n")
+    assert load_settings(path, env={}).detection.person_tokens is False
+    env = {"ALIASGATE_DETECTION__PERSON_TOKENS": "true"}
+    assert load_settings(path, env=env).detection.person_tokens is True
+    env = {"ALIASGATE_DETECTION__PERSON_TOKENS": "false"}
+    assert load_settings(None, env=env).detection.person_tokens is False
 
 
 def test_unrelated_environment_variables_are_ignored() -> None:
