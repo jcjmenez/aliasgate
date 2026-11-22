@@ -1,5 +1,6 @@
 import copy
 import pickle
+from collections.abc import Callable
 
 import pytest
 from hypothesis import given
@@ -282,26 +283,153 @@ def test_entity_is_immutable() -> None:
         entity.surface = "Juan Pérez"  # type: ignore[misc]
 
 
+# Variants of an entity and capitalised entities (slice 16) ------------------------------------
+
+
+def test_variant_of_an_unlinked_entity_continues_its_family() -> None:
+    mapping = Mapping()
+    person = mapping.assign("PERSON", "Alice Johnson")
+    johnson = mapping.assign("PERSON", "Johnson", variant_of=person)
+    alice = mapping.assign("PERSON", "Alice", variant_of=person)
+    assert (johnson.placeholder, johnson.variant) == ("[PERSON_1_B]", "B")
+    assert (alice.placeholder, alice.variant) == ("[PERSON_1_C]", "C")
+    assert mapping.assign("PERSON", "Bob Smith").placeholder == "[PERSON_2]"
+    assert mapping.lookup("PERSON", 1, "B") == "Johnson"
+    assert mapping.lookup("PERSON", 1, "C") == "Alice"
+
+
+def test_variant_of_a_group_entity_shares_the_groups_25_letters() -> None:
+    mapping = Mapping()
+    term = mapping.assign("PERSON", "Alice Johnson", link=LINK)
+    alias = mapping.assign("PERSON", "AJ", link=LINK)
+    token = mapping.assign("PERSON", "Johnson", variant_of=term)
+    later_alias = mapping.assign("PERSON", "A. Johnson", link=LINK)
+    assert [e.placeholder for e in (term, alias, token, later_alias)] == [
+        "[PERSON_1]",
+        "[PERSON_1_B]",
+        "[PERSON_1_C]",
+        "[PERSON_1_D]",
+    ]
+    rest = [
+        mapping.assign("PERSON", f"Word {index}", variant_of=alias if index % 2 else term)
+        if index % 3
+        else mapping.assign("PERSON", f"Word {index}", link=LINK)
+        for index in range(22)
+    ]
+    assert [entity.variant for entity in rest] == list("EFGHIJKLMNOPQRSTUVWXYZ")
+    # The 26th distinct surface of the family, by either route, gets the next number.
+    overflow_token = mapping.assign("PERSON", "Overflow", variant_of=token)
+    overflow_alias = mapping.assign("PERSON", "Overflow Alias", link=LINK)
+    assert [(e.placeholder, e.variant) for e in (overflow_token, overflow_alias)] == [
+        ("[PERSON_2]", None),
+        ("[PERSON_3]", None),
+    ]
+
+
+def test_variant_of_a_variant_joins_the_same_family() -> None:
+    mapping = Mapping()
+    person = mapping.assign("PERSON", "Juan Pérez García")
+    perez = mapping.assign("PERSON", "Pérez", variant_of=person)
+    juan = mapping.assign("PERSON", "Juan", variant_of=perez)
+    assert (perez.placeholder, juan.placeholder) == ("[PERSON_1_B]", "[PERSON_1_C]")
+
+
+def test_variant_of_a_full_family_gives_the_next_number_without_a_letter() -> None:
+    mapping = Mapping()
+    person = mapping.assign("PERSON", "Alice Johnson")
+    for index in range(25):
+        mapping.assign("PERSON", f"Word {index}", variant_of=person)
+    extra = mapping.assign("PERSON", "Extra", variant_of=person)
+    again = mapping.assign("PERSON", "Again", variant_of=person)
+    assert [(e.placeholder, e.variant) for e in (extra, again)] == [
+        ("[PERSON_2]", None),
+        ("[PERSON_3]", None),
+    ]
+    assert mapping.assign("PERSON", "Next", variant_of=extra).placeholder == "[PERSON_2_B]"
+
+
+def test_a_known_key_ignores_variant_of_and_capitalised() -> None:
+    mapping = Mapping()
+    person = mapping.assign("PERSON", "Alice Johnson")
+    other = mapping.assign("PERSON", "Bob Smith")
+    johnson = mapping.assign("PERSON", "Johnson", variant_of=person, capitalised=True)
+    assert mapping.assign("PERSON", "JOHNSON", variant_of=other, capitalised=False) is johnson
+    assert mapping.assign("ORG", "johnson", variant_of=other) is johnson
+    plain = mapping.assign("PERSON", "Smith")
+    assert mapping.assign("PERSON", "Smith", variant_of=other, capitalised=True) is plain
+    assert plain.capitalised is False
+    assert len(mapping) == 4
+
+
+def test_variant_of_with_a_link_another_type_or_another_mapping_raises_without_values() -> None:
+    mapping = Mapping()
+    person = mapping.assign("PERSON", "Alice Johnson")
+    stranger = Mapping().assign("PERSON", "Alice Johnson")
+    calls: list[Callable[[], Entity]] = [
+        lambda: mapping.assign("PERSON", "Johnson", link=LINK, variant_of=person),
+        lambda: mapping.assign("ORG", "Johnson", variant_of=person),
+        lambda: mapping.assign("PERSON", "Johnson", variant_of=stranger),
+    ]
+    for call in calls:
+        with pytest.raises(ValueError, match="variant_of") as excinfo:
+            call()
+        message = str(excinfo.value)
+        assert "Johnson" not in message
+        assert "johnson" not in message
+        assert "Alice" not in message
+        assert "dictionary" not in message
+    assert mapping.entities() == (person,)
+    assert mapping.assign("PERSON", "Johnson", variant_of=person).placeholder == "[PERSON_1_B]"
+
+
+def test_capitalised_defaults_to_false_is_stored_and_is_not_in_the_repr() -> None:
+    mapping = Mapping()
+    person = mapping.assign("PERSON", "Will Stone")
+    will = mapping.assign("PERSON", "Will", variant_of=person, capitalised=True)
+    unlinked = mapping.assign("PERSON", "Stone", capitalised=True)
+    assert person.capitalised is False
+    assert (will.capitalised, unlinked.capitalised) == (True, True)
+    assert unlinked.placeholder == "[PERSON_2]"
+    for rendered in (repr(will), str(will)):
+        assert "capitalised" not in rendered
+        assert "Will" not in rendered
+        assert "[PERSON_1_B]" in rendered
+    for operation in (pickle.dumps, copy.copy, copy.deepcopy):
+        with pytest.raises(TypeError, match="never serialised"):
+            operation(will)
+
+
 _TYPES = st.sampled_from(["PERSON", "ORG", "EMAIL"])
 _SURFACES = st.text(alphabet="aAbBéÉ \uff21\uff22\t\n", max_size=5)
 _LINKS = st.sampled_from([None, None, "a:1", "a:2", "b:1"])
+# An index into the entities assigned so far, to pass as variant_of when the call has no link.
+_VARIANT_OF = st.one_of(st.none(), st.none(), st.integers(min_value=0, max_value=60))
 
 
-@given(st.lists(st.tuples(_TYPES, _SURFACES, _LINKS), max_size=40))
+@given(st.lists(st.tuples(_TYPES, _SURFACES, _LINKS, _VARIANT_OF), max_size=40))
 def test_placeholders_are_unique_and_resolve_to_their_canonical_surface(
-    calls: list[tuple[str, str, str | None]],
+    calls: list[tuple[str, str, str | None, int | None]],
 ) -> None:
     mapping = Mapping()
     first_seen: dict[str, tuple[str, str]] = {}
-    for entity_type, surface, link in calls:
+    for entity_type, surface, link, index in calls:
         key = normalize_key(surface)
         if not key:
             with pytest.raises(ValueError, match="empty"):
                 mapping.assign(entity_type, surface, link=link)
             continue
-        entity = mapping.assign(entity_type, surface, link=link)
+        assigned = mapping.entities()
+        same_type = [entity for entity in assigned if entity.entity_type == entity_type]
+        variant_of = (
+            same_type[index % len(same_type)]
+            if index is not None and link is None and same_type
+            else None
+        )
+        entity = mapping.assign(entity_type, surface, link=link, variant_of=variant_of)
         first_seen.setdefault(key, (entity_type, surface))
         assert (entity.key, entity.entity_type, entity.surface) == (key, *first_seen[key])
+        if variant_of is not None and entity not in assigned and entity.variant is not None:
+            assert _parse(entity.placeholder)[:2] == _parse(variant_of.placeholder)[:2]
 
     entities = mapping.entities()
     assert len(entities) == len(mapping) == len(first_seen)

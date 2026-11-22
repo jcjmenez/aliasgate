@@ -11,10 +11,11 @@ from dataclasses import dataclass
 
 from aliasgate.detectors.literal import LiteralDetector
 from aliasgate.mapping import Entity, Mapping, normalize_key
+from aliasgate.names import name_words
 from aliasgate.placeholders import TOLERANT, parse_match
 from aliasgate.resolve import resolve_overlaps
-from aliasgate.terms import build_term_pattern
-from aliasgate.types import LITERAL, PRIORITY_PROPAGATION, Detector, Span
+from aliasgate.terms import build_term_pattern, starts_upper
+from aliasgate.types import LITERAL, PERSON, PRIORITY_PROPAGATION, Detector, Span
 
 # Literal keys are the exact surface behind a prefix, so that "[PERSON_1]" and "[person_1]"
 # in the input stay two entities and both restore byte for byte (architecture §4.4).
@@ -25,6 +26,7 @@ _PROPAGATION_SOURCE = "propagation"
 # A replaced range and its entity. The span carries the entity's type and the detector that
 # found it ("propagation" for propagated ones).
 type _Occurrence = tuple[Span, Entity]
+type _Family = tuple[str, int]  # the type and number that an entity and its variants share
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +81,8 @@ class Pseudonymizer:
 
     Deterministic: numbering depends only on the content and order of the texts. Fails
     closed: if any detector fails, `pseudonymize` raises DetectionError and returns nothing.
+    With `person_tokens`, the shorter forms of a detected person's name become variants of
+    that person (architecture §4.3).
     """
 
     def __init__(
@@ -88,6 +92,7 @@ class Pseudonymizer:
         allow_list: Iterable[str] = (),
         propagate: bool = True,
         min_propagation_length: int = 3,
+        person_tokens: bool = False,
     ) -> None:
         if min_propagation_length < 1:
             raise ValueError("min_propagation_length must be at least 1")
@@ -95,6 +100,7 @@ class Pseudonymizer:
         self._allow_keys = frozenset(normalize_key(term) for term in allow_list) - {""}
         self._propagate = propagate
         self._min_propagation_length = min_propagation_length
+        self._person_tokens = person_tokens
 
     @property
     def detectors(self) -> tuple[Detector, ...]:
@@ -134,13 +140,25 @@ class Pseudonymizer:
         seconds = dict.fromkeys((detector.name for detector in self._detectors), 0.0)
         resolved = [self._detect(text, seconds) for text in batch]
         mapping = Mapping()
+        linker = (
+            _PersonLinker(mapping, batch, resolved, self._allow_keys, self._min_propagation_length)
+            if self._person_tokens
+            else None
+        )
         occurrences: list[list[_Occurrence]] = []
-        for text, spans in zip(batch, resolved, strict=True):
+        for index, (text, spans) in enumerate(zip(batch, resolved, strict=True)):
             found = []
             for span in spans:
-                entity = _assign(mapping, span, text[span.start : span.end])
+                surface = text[span.start : span.end]
+                entity = (
+                    _assign(mapping, span, surface)
+                    if linker is None
+                    else linker.assign(span, surface)
+                )
                 found.append((dataclasses.replace(span, entity_type=entity.entity_type), entity))
             occurrences.append(found)
+            if linker is not None and self._propagate:
+                linker.find_words(index)
         if self._propagate:
             self._propagate_entities(mapping, batch, occurrences)
         for found in occurrences:
@@ -184,6 +202,8 @@ class Pseudonymizer:
             pattern = build_term_pattern(entity.surface)
             for text, taken, found in zip(texts, occupied, occurrences, strict=True):
                 for match in pattern.finditer(text):
+                    if entity.capitalised and not starts_upper(match.group()):
+                        continue
                     if taken.claim(match.start(), match.end()):
                         span = Span(
                             match.start(),
@@ -200,6 +220,135 @@ def _assign(mapping: Mapping, span: Span, surface: str) -> Entity:
     if span.entity_type == LITERAL:
         return mapping.assign(LITERAL, surface, key=_LITERAL_KEY_PREFIX + surface)
     return mapping.assign(span.entity_type, surface, link=span.link)
+
+
+def _family(entity: Entity) -> _Family:
+    entity_type, number, _ = parse_match(next(TOLERANT.finditer(entity.placeholder)))
+    return entity_type, number
+
+
+class _Bounds:
+    """The resolved spans of one text, to tell whether a range overlaps any of them."""
+
+    def __init__(self, spans: Sequence[Span]) -> None:  # sorted by start, disjoint
+        self._starts = [span.start for span in spans]
+        self._ends = [span.end for span in spans]
+
+    def overlaps(self, start: int, end: int) -> bool:
+        index = bisect_left(self._starts, end)
+        return index > 0 and self._ends[index - 1] > start
+
+
+@dataclass(slots=True)
+class _Candidate:
+    """A name token nobody detected, pending until it occurs on its own."""
+
+    key: str
+    pattern: re.Pattern[str]
+    searched: int = 0  # texts before this index have been searched
+
+
+class _PersonLinker:
+    """Links the shorter forms of a person's name to that person, for one batch (architecture
+    §4.3, steps 2a and 2b). A person is a PERSON entity with at least two name tokens."""
+
+    def __init__(
+        self,
+        mapping: Mapping,
+        texts: tuple[str, ...],
+        resolved: Sequence[Sequence[Span]],
+        allow_keys: frozenset[str],
+        min_length: int,
+    ) -> None:
+        self._mapping = mapping
+        self._texts = texts
+        self._bounds = [_Bounds(spans) for spans in resolved]
+        self._allow_keys = allow_keys
+        self._min_length = min_length
+        self._first: dict[_Family, Entity] = {}  # in order of assignment
+        # Every contiguous run of the name tokens of a person -> the families of such persons.
+        self._runs: dict[tuple[str, ...], set[_Family]] = {}
+        self._pending: dict[str, _Candidate] = {}
+
+    def assign(self, span: Span, surface: str) -> Entity:
+        """Step 2a: assign a resolved span, as a variant of the one family of persons whose
+        name tokens hold its own as a contiguous run, when it is an unlinked PERSON span with
+        a new key."""
+        family = None
+        if (
+            span.entity_type == PERSON
+            and span.link is None
+            and self._mapping.get(normalize_key(surface)) is None
+        ):
+            keys = tuple(key for key, _ in self._words(surface))
+            families = self._runs.get(keys, set()) if keys else set()
+            if len(families) == 1:
+                (family,) = families
+        known = len(self._mapping)
+        if family is None:
+            entity = _assign(self._mapping, span, surface)
+        else:
+            entity = self._mapping.assign(PERSON, surface, variant_of=self._first[family])
+        if len(self._mapping) > known:
+            self._record(entity)
+        return entity
+
+    def find_words(self, index: int) -> None:
+        """Step 2b, after the walk of text `index`: assign every pending name token that occurs
+        on its own in texts 0..index. Each candidate searches each text at most once."""
+        found: list[tuple[int, int, str, str]] = []
+        for candidate in list(self._pending.values()):
+            if self._mapping.get(candidate.key) is not None:
+                del self._pending[candidate.key]
+                continue
+            for position in range(candidate.searched, index + 1):
+                occurrence = self._occurrence(candidate, position)
+                if occurrence is not None:
+                    found.append((position, occurrence[0], candidate.key, occurrence[1]))
+                    break
+            candidate.searched = index + 1
+        for _, _, key, surface in sorted(found):
+            del self._pending[key]
+            families = self._runs.get((key,), set())
+            variant_of = self._first[next(iter(families))] if len(families) == 1 else None
+            entity = self._mapping.assign(PERSON, surface, variant_of=variant_of, capitalised=True)
+            self._record(entity)
+
+    def _occurrence(self, candidate: _Candidate, position: int) -> tuple[int, str] | None:
+        """The start and surface of the first match of the candidate on its own in a text:
+        capitalised, with the candidate's key, and outside every span resolved for the text."""
+        bounds = self._bounds[position]
+        for match in candidate.pattern.finditer(self._texts[position]):
+            surface = match.group()
+            if (
+                starts_upper(surface)
+                and normalize_key(surface) == candidate.key
+                and not bounds.overlaps(match.start(), match.end())
+            ):
+                return match.start(), surface
+        return None
+
+    def _words(self, surface: str) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (key, word)
+            for key, word in name_words(surface, min_length=self._min_length)
+            if key not in self._allow_keys
+        )
+
+    def _record(self, entity: Entity) -> None:
+        """Note a new entity's family and, for a person, its runs and candidate words."""
+        family = _family(entity)
+        self._first.setdefault(family, entity)
+        words = self._words(entity.surface) if entity.entity_type == PERSON else ()
+        if len(words) < 2:
+            return
+        keys = tuple(key for key, _ in words)
+        for start in range(len(keys)):
+            for end in range(start + 1, len(keys) + 1):
+                self._runs.setdefault(keys[start:end], set()).add(family)
+        for key, word in words:
+            if key not in self._pending and self._mapping.get(key) is None:
+                self._pending[key] = _Candidate(key, build_term_pattern(word))
 
 
 def _replace(text: str, occurrences: list[_Occurrence]) -> str:

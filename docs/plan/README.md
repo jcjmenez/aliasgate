@@ -27,7 +27,7 @@ Read [AGENTS.md](../../AGENTS.md) first. Its rules apply to every slice.
 | 13 | [slice-13-dictionary-aliases.md](slice-13-dictionary-aliases.md) | Dictionary aliases, variant placeholders | 12 | done |
 | 14 | [slice-14-rule-gaps.md](slice-14-rule-gaps.md) | Rule coverage gaps | 13 | done |
 | 15 | [slice-15-person-evaluation.md](slice-15-person-evaluation.md) | Person mentions evaluation set, link scores | 14 | done |
-| 16 | [slice-16-person-tokens.md](slice-16-person-tokens.md) | Person name tokens and linking | 15 | planned |
+| 16 | [slice-16-person-tokens.md](slice-16-person-tokens.md) | Person name tokens and linking | 15 | done |
 
 Slices 02 and 03 can be done in either order. Slices 09 and 11 can be done any time after 04.
 The first usable end-to-end product exists after slice 06; the first one worth deploying, after

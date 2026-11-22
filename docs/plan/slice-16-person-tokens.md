@@ -58,6 +58,67 @@ Slice 15 (the person corpus, its link scores and its baseline). Every earlier sl
   `it will` unchanged when capitalised-only matching was on. It also replaced `Will` in
   `Will you check it?`, which is the expected false positive of decision 1.
 
+## Decisions made while implementing
+
+One question was asked on 2026-11-22, and the maintainer chose the recommended option:
+
+1. **The synthetic corpora with the ML layer.** The "Evaluation" section below says that the
+   synthetic corpora's numbers must not change. The rules-only numbers (the CI gate) did not,
+   and neither did English with the ML layer. In Spanish one example changed (`es-0021`): the
+   model tags a company named after a person (gold `ORG`) as `PERSON` twice, once in part and
+   once whole in lower case, so two more of its words become name tokens and are replaced in
+   the first mention. The Spanish leak rate fell from 0.0224 to 0.0217 (285 to 277 of 12,738
+   characters), and Spanish `PERSON` went from 315 to 317 predicted spans and from 0.838 to
+   0.833 `precision_exact`. Decision: keep the specified behaviour and record both sets of
+   numbers in `docs/evaluation.md`. Rejected: dropping words with an inner `.` from name tokens,
+   which would still change the numbers, and stopping the slice to revise the spec.
+
+Other choices:
+
+- **Helpers outside the file table.** `names.name_words` returns each name token's key with the
+  word as written, because step 2b searches the word as written. `terms.starts_upper` is the
+  capitalisation test shared by the engine and the audit. The logging invariant test lives in
+  `tests/proxy/test_invariants.py`, not in `tests/proxy/test_app.py`, so the request with
+  shorter forms was added there.
+- **Word lists hold keys.** `TITLES` and `PARTICLES` are built with `normalize_key`. NFKC turns
+  `dª` into `da`, so that title is stored as `da`, which is also a particle. Step 2 strips the
+  final dot, so step 4's "with one final `.` removed" never applies; it is kept as written.
+- **`capitalised` is not in the `repr`.** The `repr` of an entity still shows its type, its
+  placeholder and its variant, as before.
+- **Rule 1 comes first.** A known key returns its entity even when `variant_of` comes with a
+  link or names an entity of another type; the `ValueError` of rule 2 is raised only for a new
+  key.
+- **A name with one name token is not a person.** A detected `Dr. Smith` or `J. R. Smith`
+  gives no candidate, so `Smith` alone stays as written. This follows the definition of a
+  person; it is documented in usage §6.3, threat model risk 1 and backlog §1, and pinned by a
+  test.
+- **Expectations that changed with the default on.** Only the configuration defaults of
+  `tests/test_config.py` (the new `person_tokens` key). Every other pre-existing test passes
+  unchanged, with `person_tokens` on in the configuration and off in the engine.
+- **Tests beyond the list.** A detected word of two persons gets its own number (2a), a
+  dictionary span with a link keeps its group, a detected span of another type is never
+  linked, a name with one name token gives no words, the keyword is off by default, `analyze`
+  reports undetected shorter forms with source `propagation`, a name token's entity may exist
+  without a replaced occurrence, the audit with capitalised entities only, the property of the
+  combined audit search extended with capitalised entities, and the mapping property extended
+  with `variant_of`. The engine's property generator was probed: of 2,000 batches, about 44%
+  held a capitalised variant, 8% a detected variant and 3% a word with its own number.
+- **Measured.** The search bound input (1,000 texts) takes 1.15 s. With every pending candidate
+  searched in every earlier text after each text, 500 texts took 30 s and 1,000 texts did not
+  finish within 120 s. The four engine properties, the mapping property and the audit property
+  each passed 20,000 examples. Each condition of the acceptance checklist was broken on purpose
+  and a test failed: the capitalisation filter in propagation and in the audit (both by any
+  match and by the folded key), capitalised entities created in 2b, the step-1 overlap and the
+  capitalisation condition of 2b, the exactly-one-family rule in 2a and in 2b, the contiguous
+  run rule, each word list, initials, the minimum length, the allow list, the per-text pass,
+  2b without propagation, linked and non-`PERSON` spans in 2a, persons with one name token, and
+  the once-per-text search (the search bound test). Putting capitalised entities into the
+  audit's key pre-filter changes no result, because the check per entity decides; it is the
+  only change that no test can see.
+- **Numbers.** With the dictionary, the person corpus leak rate fell from 0.3625 to 0.0425 in
+  English and from 0.2735 to 0.0339 in Spanish; with the ML layer, from 0.2768 to 0.0201 and
+  from 0.2300 to 0.0168. `docs/evaluation.md` has every table, per category too.
+
 ## Dependencies to add
 
 None.

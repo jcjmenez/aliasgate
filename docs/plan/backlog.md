@@ -28,6 +28,12 @@ for whole surfaces. Slice 15 adds a person corpus with gold entity ids and link 
 replaces and links the shorter forms where they are capitalised. A form is one name word in any
 position, or a contiguous run of words. Nicknames, lower-case forms and other types stay here.
 
+**Still open after slice 16.** Lower-case shorter forms (`thanks alice`), nicknames (`Bob` for
+`Robert`), diminutives (`Juanito`), transliterations, a part of a hyphenated name (`José` for
+`María-José`), the words of a detected name with only one name token (`Dr. Smith`), the
+English first name `Don` (read as a title), and linking the words of other types, such as
+`ORG`.
+
 ## 2. Realistic surrogates, opt-in per entity type
 
 **Problem.** Placeholders reduce answer quality on some tasks (state of the art §5).

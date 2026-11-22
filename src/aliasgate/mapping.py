@@ -27,7 +27,9 @@ class Entity:
     entity_type: str
     surface: str = field(repr=False)  # canonical surface: the first one seen
     placeholder: str
-    variant: str | None = None  # None for the first surface of a group and for unlinked entities
+    variant: str | None = None  # None for the first surface of a family and for unlinked entities
+    # Propagated and audited only where it starts with an upper-case letter (slice 16).
+    capitalised: bool = field(default=False, repr=False)
 
     def __getstate__(self) -> object:
         raise TypeError(_NOT_SERIALISABLE)
@@ -39,33 +41,49 @@ class Entity:
 class Mapping:
     """Placeholder-to-surface table of one request; numbers start at 1 per entity type.
 
-    Surfaces with the same link and type form a group: they share a number, and every surface
-    after the first gets the next variant letter. Not thread-safe: use one instance per
-    request. Its repr reveals only the entity count, and it cannot be pickled or copied.
+    The entities that share a type and a number form a family: the first has no letter, and
+    each later one gets the family's next variant letter. Surfaces with the same link and type
+    join one family, and so does an entity assigned as a variant of another. Not thread-safe:
+    use one instance per request. Its repr reveals only the entity count, and it cannot be
+    pickled or copied.
     """
 
-    __slots__ = ("_by_key", "_by_placeholder", "_counters", "_groups")
+    __slots__ = ("_by_key", "_by_placeholder", "_counters", "_groups", "_letters", "_numbers")
 
     def __init__(self) -> None:
         self._by_key: dict[str, Entity] = {}
         self._by_placeholder: dict[tuple[str, int, str | None], Entity] = {}
         self._counters: dict[str, int] = {}
-        # (link, entity type) -> (number, variant letters used). Link ids live only here.
-        self._groups: dict[tuple[str, str], tuple[int, int]] = {}
+        # (entity type, number) -> variant letters the family has used.
+        self._letters: dict[tuple[str, int], int] = {}
+        # (link, entity type) -> the number of the link's family. Link ids live only here.
+        self._groups: dict[tuple[str, str], int] = {}
+        self._numbers: dict[str, int] = {}  # key -> number of the entity's family
 
     def assign(
-        self, entity_type: str, surface: str, *, key: str | None = None, link: str | None = None
+        self,
+        entity_type: str,
+        surface: str,
+        *,
+        key: str | None = None,
+        link: str | None = None,
+        variant_of: Entity | None = None,
+        capitalised: bool = False,
     ) -> Entity:
         """Return the entity for the key (default: normalize_key(surface)), creating it if the
         key is new (architecture §4.2).
 
-        For an existing key the stored entity is returned unchanged, even if `entity_type`,
-        `link` or the surface's case differ. A new key without a link gets the next number for
-        `entity_type`. A new key with a link joins the group (link, entity_type): the first
-        surface of a group gets the next number, later ones the group's number and the next
-        variant letter, and once all 25 letters are used, the next number and no letter.
+        For an existing key the stored entity is returned unchanged, whatever `entity_type`,
+        `link`, `variant_of`, `capitalised` or the surface's case are. A new key with
+        `variant_of` joins the family of that entity. A new key without a link gets the next
+        number for `entity_type`. A new key with a link joins the family of the group (link,
+        entity_type): the first surface of a group gets the next number. Joining a family gives
+        its number and the family's next variant letter, and once all 25 letters are used, the
+        next number and no letter. `capitalised` is stored on a new entity.
 
-        Raises ValueError for an invalid entity type, an empty key or an empty surface."""
+        Raises ValueError for an invalid entity type, an empty key or an empty surface, and for
+        a new key whose `variant_of` comes with a link, has another type or belongs to another
+        mapping; messages never hold a value."""
         validate_entity_type(entity_type)
         if key is None:
             key = normalize_key(surface)
@@ -77,15 +95,14 @@ class Mapping:
         if existing is not None:
             return existing
         group_key = None if link is None else (link, entity_type)
-        group = None if group_key is None else self._groups.get(group_key)
+        family = self._family(entity_type, link, variant_of, group_key)
+        used = len(VARIANT_LETTERS) if family is None else self._letters[entity_type, family]
         variant: str | None = None
-        if group is not None and group[1] < len(VARIANT_LETTERS):  # a group with a free letter
-            number, used = group
+        if family is not None and used < len(VARIANT_LETTERS):
+            number = family
             variant = VARIANT_LETTERS[used]
-            updated_group: tuple[int, int] | None = (number, used + 1)
-        else:  # no link, a new group, or a full group, which stays as it is
+        else:  # no family to join, or a full one, which stays as it is
             number = self._counters.get(entity_type, 0) + 1
-            updated_group = (number, 0) if group is None else None
         # Built before any state changes, so that a failure leaves the mapping as it was.
         entity = Entity(
             key=key,
@@ -93,14 +110,37 @@ class Mapping:
             surface=surface,
             placeholder=format_placeholder(entity_type, number, variant),
             variant=variant,
+            capitalised=capitalised,
         )
         if variant is None:
             self._counters[entity_type] = number
-        if group_key is not None and updated_group is not None:
-            self._groups[group_key] = updated_group
+            self._letters[entity_type, number] = 0
+        else:
+            self._letters[entity_type, number] += 1
+        if group_key is not None and group_key not in self._groups:
+            self._groups[group_key] = number
         self._by_key[key] = entity
         self._by_placeholder[(entity_type, number, variant)] = entity
+        self._numbers[key] = number
         return entity
+
+    def _family(
+        self,
+        entity_type: str,
+        link: str | None,
+        variant_of: Entity | None,
+        group_key: tuple[str, str] | None,
+    ) -> int | None:
+        """The number of the family a new entity joins, or None for a new number."""
+        if variant_of is not None:
+            if link is not None:
+                raise ValueError("variant_of cannot be combined with a link")
+            if variant_of.entity_type != entity_type:
+                raise ValueError("variant_of must have the same entity type")
+            if self._by_key.get(variant_of.key) is not variant_of:
+                raise ValueError("variant_of must be an entity of this mapping")
+            return self._numbers[variant_of.key]
+        return None if group_key is None else self._groups.get(group_key)
 
     def get(self, key: str) -> Entity | None:
         """Return the entity recorded for `key`, or None."""

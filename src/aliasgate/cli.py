@@ -276,6 +276,7 @@ def _summary(
             f"tool_definitions={_on(policy.tool_definitions)}, "
             f"leak_audit={_on(policy.leak_audit)}",
             f"propagation: {_on(detection.propagate)}",
+            f"person tokens: {_on(detection.person_tokens)}",
             f"metrics: {_on(settings.metrics.enabled)}",
         ]
     )

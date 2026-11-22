@@ -21,7 +21,7 @@ Three layers, with dependencies pointing only downwards:
 
 | Layer | Package | Knows about | Must not know about |
 |---|---|---|---|
-| Core | `aliasgate.types`, `placeholders`, `mapping`, `resolve`, `engine`, `stream`, `audit`, `detectors.*` | Strings and spans (`audit` walks any JSON value, without knowing its shape) | Provider JSON shapes, HTTP |
+| Core | `aliasgate.types`, `placeholders`, `mapping`, `names`, `resolve`, `engine`, `stream`, `audit`, `detectors.*` | Strings and spans (`audit` walks any JSON value, without knowing its shape) | Provider JSON shapes, HTTP |
 | Dialects | `aliasgate.dialects.*` | The JSON shape of one provider API | HTTP, sockets |
 | Proxy | `aliasgate.proxy.*`, `config`, `cli`, `metrics` | HTTP, configuration, wiring | Detection internals |
 | Evaluation | `aliasgate.eval.*` | The core, plus configuration and wiring (`config`, `factory`) to build the engine as the gateway does | HTTP, dialects |
@@ -38,7 +38,10 @@ keeps it usable as a library and as a plugin for other gateways.
 | **Surface** | The exact substring a span covers. |
 | **Key** | The normalised surface used to decide that two surfaces are the same entity (section 4.2). |
 | **Link** | An opaque id a detector puts on spans whose different surfaces name one entity, such as a dictionary term and its aliases (`dictionary:7`). It never contains text. |
-| **Variant** | One surface of a link group after the first, marked by a letter from `B` to `Z` in its placeholder (`[ORG_1_B]`). |
+| **Family** | The entities that share a type and a number: an entity and its variants. A link group is one family. |
+| **Variant** | An entity of a family after the first, marked by a letter from `B` to `Z` in its placeholder (`[ORG_1_B]`). |
+| **Name token** | A word of a `PERSON` surface that can name the person on its own: not a title, a particle or an initial (§4.3). |
+| **Person** | A `PERSON` entity whose surface has at least two name tokens. |
 | **Placeholder** | The replacement text, `[TYPE_N]` or `[TYPE_N_V]`, with `N` starting at 1 per type and `V` the variant letter. |
 | **Mapping** | The per-request table placeholder ↔ canonical surface. |
 | **Slot** | One string inside a JSON payload that the gateway processes, with a way to read and write it. |
@@ -83,7 +86,7 @@ aliases. Rule, ML and literal spans have none. The detection cache stores spans 
 | 80 | Company dictionary | `detectors/dictionary.py` | User-provided terms and their aliases |
 | 60 | Rules | `detectors/rules.py` | Regex plus checksum or library validation |
 | 40 | ML | `detectors/gliner.py` | Local NER model, optional extra |
-| 20 | Propagation | inside `engine.py` | Values already detected elsewhere in the same request |
+| 20 | Propagation | inside `engine.py` | Values already detected elsewhere in the same request, and the name tokens of detected persons (§4.3) |
 
 An **allow list** (terms never to pseudonymise, for example the deploying company's own name) is
 applied after detection: any span whose key equals an allow-list key is dropped.
@@ -121,7 +124,8 @@ pseudonymised texts in the same order plus the mapping:
 ```python
 class Pseudonymizer:
     def __init__(self, detectors: Sequence[Detector], *, allow_list: Iterable[str] = (),
-                 propagate: bool = True, min_propagation_length: int = 3) -> None: ...
+                 propagate: bool = True, min_propagation_length: int = 3,
+                 person_tokens: bool = False) -> None: ...
     def pseudonymize(self, texts: Sequence[str]) -> PseudonymizedBatch: ...
     def analyze(self, texts: Sequence[str]) -> list[list[Span]]: ...  # spans, not replaced
     @property
@@ -152,6 +156,11 @@ cannot be pickled or copied, and their state cannot be read (security invariant 
 Processing the request as one batch is what makes consistency and determinism possible: the
 numbering depends only on the content and order of the texts.
 
+`person_tokens` turns on the linking of person names (§4.3, steps 2a and 2b). The keyword
+defaults to off, so library callers keep the output they had; `detection.person_tokens`
+defaults to on, and the gateway, `aliasgate check`, `aliasgate demo` and the evaluation harness
+build the engine from the configuration.
+
 ### 4.2 Keys
 
 ```python
@@ -164,10 +173,13 @@ and the canonical surface are those of the **first** occurrence in batch order. 
 "ACME" and "Acme" both occur, both become `[ORG_1]` and both are restored as the first form
 seen. This loss of case variation is accepted and documented.
 
-**Link groups.** Surfaces with different keys can name one entity: a dictionary term and its
-aliases. Their spans carry the same link, and the mapping groups them by `(link, entity_type)`.
-Each surface of a group is still its own entity, with its own key, canonical surface and
-placeholder, but they share a number and are told apart by a variant letter:
+**Families and link groups.** Surfaces with different keys can name one entity: a dictionary
+term and its aliases, or a person's full name and its shorter forms. Each such surface is still
+its own entity, with its own key, canonical surface and placeholder, but they form a family:
+they share a type and a number and are told apart by a variant letter. The spans of a term and
+its aliases carry the same link, and the mapping records the family of each `(link,
+entity_type)` group. The engine puts the shorter forms of a person's name in the person's
+family with `variant_of` (§4.3):
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -176,28 +188,38 @@ class Entity:
     entity_type: str
     surface: str = field(repr=False)
     placeholder: str
-    variant: str | None = None  # None for the first surface of a group and for unlinked entities
+    variant: str | None = None  # None for the first entity of a family
+    capitalised: bool = False   # propagated and audited only where it starts upper-case
 
 class Mapping:
     def assign(self, entity_type: str, surface: str, *, key: str | None = None,
-               link: str | None = None) -> Entity: ...
+               link: str | None = None, variant_of: Entity | None = None,
+               capitalised: bool = False) -> Entity: ...
     def lookup(self, entity_type: str, number: int,
                variant: str | None = None) -> str | None: ...
 ```
 
 `assign` decides in this order:
 
-1. **Known key.** The key already has an entity: return it unchanged, whatever `link` and
-   `entity_type` are. The entity does not join the link's group.
-2. **No link.** Create an entity with the next number for the type and no variant.
-3. **New group.** The group `(link, entity_type)` has no entity yet: create an entity with the
+1. **Known key.** The key already has an entity: return it unchanged, whatever `link`,
+   `variant_of`, `capitalised` and `entity_type` are. The entity does not join another family.
+2. **Variant of.** `variant_of` is given: the new entity joins the family of that entity, with
+   its number and the family's next unused letter of `B` to `Z`. When the family has used all
+   25 letters, the new entity gets the next number and no letter. `variant_of` together with a
+   `link`, with another `entity_type`, or naming an entity that is not in this mapping, raises
+   `ValueError`, whose message repeats no value.
+3. **No link.** Create an entity with the next number for the type and no variant.
+4. **New group.** The group `(link, entity_type)` has no entity yet: create an entity with the
    next number and no variant, and record the number for the group.
-4. **Known group.** The group has used fewer than 25 variants: create an entity with the
-   group's number and the next unused letter of `B` to `Z`.
-5. **Full group.** The group has used all 25 letters: create an entity with the next number and
+5. **Known group.** The group's family has used fewer than 25 letters: create an entity with the
+   group's number and the family's next unused letter of `B` to `Z`.
+6. **Full group.** The family has used all 25 letters: create an entity with the next number and
    no variant, outside the group. Nothing leaks; the surface is only not linked.
 
-A link never joins entities of different types. `lookup` without a variant returns the surface
+Letters are counted per family, by type and number, so a dictionary term, its aliases and its
+person's name tokens share one set of 25 letters. `capitalised` is stored on the new entity and
+never changes; `repr` shows only the type, the placeholder and the variant. A link never joins
+entities of different types. `lookup` without a variant returns the surface
 of the entity that has no letter, and with a variant the surface of that variant; both return
 None when the placeholder is not in the mapping. `entities()` and `len()` include variants,
 because every placeholder is one entity. Link ids are kept only as keys of the mapping's group
@@ -213,9 +235,46 @@ Given `texts[0..n)`:
    by `start`. For each span compute the key; the first time a key is seen, record the entity
    `(key, entity_type, surface)` and assign it `[TYPE_N]`, where `N` is the next unused number
    for that type, or, for a span with a link, the placeholder the link's group gives it
-   (section 4.2). Numbering and variant letters therefore follow the order of first
-   **detection**, and propagation (next step) never influences them. `LITERAL` spans keep their
-   exact key and ignore links.
+   (section 4.2). Numbers and variant letters therefore follow the order of first
+   **detection** or, for a name token that nobody detected, the order of its first occurrence
+   on its own once its person exists (step 2b). Propagation (step 3) never influences them.
+   `LITERAL` spans keep their exact key and ignore links.
+
+   With `person_tokens`, this step runs text by text as 2a and 2b. Name tokens come from
+   `names.name_tokens(surface, min_length=min_propagation_length)`: split the surface on
+   whitespace, strip the characters of a Unicode punctuation category from both ends of each
+   word (an inner apostrophe or hyphen stays), take `normalize_key`, and drop the word if its
+   key is empty, a title (`names.TITLES`: `mr`, `ms`, `dr`, `sr`, `sra`, `dña`, `don` and
+   others), a particle (`names.PARTICLES`: `de`, `del`, `la`, `van`, `von` and others), an
+   initial (one letter), or shorter than `min_length`. A token whose key is on the allow list is
+   never a name token. The persons of a family are its entities with at least two name tokens,
+   whether a detector or a dictionary found them.
+
+   - **2a. Linking a detected span.** A span is assigned as a variant (`variant_of` the first
+     entity of the family, in order of assignment) when its type is `PERSON`, it has no link,
+     its key has no entity yet, its name tokens are not empty, and they form a contiguous run
+     of the name tokens of at least one person that exists at that point of the walk, all such
+     persons belonging to one family. Equal sequences count, so `Dr. Alice Johnson` links to
+     `Alice Johnson`; `Juan García` does not link to `Juan Pérez García`. Any other span is
+     assigned as above, and a dictionary span with a link keeps its group.
+   - **2b. Words nobody detected** (only with propagation on). After the walk of text `i`, the
+     candidates are the name token keys of every person that exists, except keys that already
+     have an entity of any type. A candidate occurs on its own at a match of
+     `build_term_pattern(word)` in one of the texts `0..i` that starts with an upper-case or
+     title-case letter (`str.isupper` or `str.istitle` of its first character), whose
+     `normalize_key` equals the candidate, and that overlaps no span resolved for that text in
+     step 1. `word` is the token as written, without its end punctuation, in the first person
+     that has it. The candidates that occur on their own are assigned in the order of their
+     first such occurrence (text index, then start, then key), with `capitalised=True` and the
+     surface of that occurrence: as a variant of the family when the persons of exactly one
+     family have the token, otherwise with a number of their own. The others stay pending.
+     Each candidate searches each text at most once: a new candidate searches texts `0..i`,
+     a pending one only each new text, so the work is proportional to candidates × texts.
+
+   Step 2b depends only on the spans resolved in step 1 and on the texts, never on what
+   propagation claims, so append stability holds. A name token's entity may exist without a
+   replaced occurrence, when its only occurrence on its own lies inside a longer value that
+   propagation replaces first; it is still audited and counted.
 3. **Propagate** (if enabled). For each recorded entity whose key length is at least
    `min_propagation_length`, build a pattern from its canonical surface with
    `build_term_pattern` (`terms.py`): split the surface on whitespace, `re.escape` each token,
@@ -224,7 +283,9 @@ Given `texts[0..n)`:
    `source="propagation"`, `priority=20`, `score=1.0`, the entity's type, and a direct reference
    to the entity (do not re-derive the key from the matched text). Process entities longest
    canonical surface first, so "Juan Pérez García" wins over "Juan Pérez" where both match, and
-   skip a match that overlaps a propagation span accepted earlier.
+   skip a match that overlaps a propagation span accepted earlier. An entity with `capitalised`
+   keeps only the matches that start with an upper-case or title-case letter, so `la mesa`
+   stays next to `Pedro Mesa`.
 4. **Replace.** For each text, replace spans from the last to the first so offsets stay valid.
 
 Determinism requirements, each covered by a property test:
@@ -232,10 +293,11 @@ Determinism requirements, each covered by a property test:
 - Calling `pseudonymize` twice with the same texts and the same detectors returns identical
   output.
 - **Append stability.** For batches `A` and `A + B`, every entity in the mapping of `A` has the
-  same placeholder, variant and canonical surface in the mapping of `A + B`. With propagation disabled,
+  same placeholder, variant, canonical surface and `capitalised` flag in the mapping of `A + B`. With propagation disabled,
   the pseudonymised texts of `A` are also identical. (With propagation enabled, a text of `A`
   can change only by having more values replaced, when `B` reveals an entity that `A` contained
-  undetected.) This keeps provider prompt caches valid across the turns of a conversation.
+  undetected, or a person whose name tokens it held on their own.) This keeps provider prompt
+  caches valid across the turns of a conversation.
 
 ### 4.4 Placeholder literals
 
@@ -472,7 +534,7 @@ Exceptions are logged by class name only, and the JSON formatter never renders a
 
 | Check | When | On failure |
 |---|---|---|
-| **Outbound leak audit**: for every non-`LITERAL` entity in the mapping whose key length is ≥ `min_propagation_length`, no **string value anywhere in the outbound body** (not only the slots; keys are not checked) contains it, either by the propagation pattern of §4.3 step 3 (word-bounded, case-insensitive) or by its key in the NFKC-normalised, case-folded string | after the slots are written, before forwarding | reject with 500 `leak_audit_failed`, nothing is forwarded, metric `aliasgate_leak_audit_failures_total` |
+| **Outbound leak audit**: for every non-`LITERAL` entity in the mapping whose key length is ≥ `min_propagation_length`, no **string value anywhere in the outbound body** (not only the slots; keys are not checked) contains it, either by the propagation pattern of §4.3 step 3 (word-bounded, case-insensitive) or by its key in the NFKC-normalised, case-folded string; a `capitalised` entity only by a match of the pattern that starts with an upper-case or title-case letter | after the slots are written, before forwarding | reject with 500 `leak_audit_failed`, nothing is forwarded, metric `aliasgate_leak_audit_failures_total` |
 | **Unresolved placeholders**: tolerant matches in the response not present in the mapping | after restoring | pass through unchanged, metric `aliasgate_unresolved_placeholders_total` |
 
 The audit searches both ways because the two notions of "the same value" differ. The term
@@ -482,6 +544,14 @@ rejects such a request instead of forwarding it. The pattern also matches some v
 keys differ, such as `İvan` for `Ivan`, and those are reported as well. A combined alternation
 of all entities decides in one pass per string whether anything leaked; each entity is
 searched on its own only to count a failure. The audit is on by default (`policy.leak_audit`).
+
+A `capitalised` entity (a name token that nobody detected, §4.3 step 2b) is found only by its
+term pattern, at a match that starts with an upper-case or title-case letter, as propagation
+replaces it. Its key is not searched in the folded text, which would report the lower-case
+common word that the gateway leaves in place on purpose (`la mesa`). So a decomposed accent or
+full-width letters in such a word are not caught; these words were not entities at all before
+person name linking. The term alternation may include capitalised entities as a pre-filter; the
+key alternation leaves them out, and the per-entity check decides.
 
 Metrics live in a registry per application and are served at `GET /metrics` when
 `metrics.enabled` (the default), on the gateway's port. Every label value is chosen by the
@@ -524,6 +594,7 @@ base URLs may carry a base path (§7).
 | Typed placeholders | Realistic surrogates | Safe, auditable reversal. Surrogates opt-in later. |
 | ASCII `[TYPE_N]` | `<TYPE_N>`, `{{TYPE_N}}`, `⟦TYPE_N⟧` | Angle brackets are stripped by HTML renderers, braces collide with templates, non-ASCII brackets tokenise badly and get normalised by models. |
 | Variant placeholders for linked surfaces (`[ORG_1]`, `[ORG_1_B]`), letters by first appearance | One placeholder per entity, restored as its first surface; `[ORG_1B]`; one fixed letter per alias | Each surface restores to itself, so the round trip stays lossless and tool arguments keep the user's wording. `[ORG_1B]` reads as another number. Fixed letters would reveal how many aliases the dictionary holds and break the first-appearance rule. |
+| Shorter forms of a detected person's name become variants of that person, replaced only where they start with an upper-case letter | Case-insensitive matching, or no replacement | Case-insensitive matching turns common words that are also names into placeholders (`la mesa` next to `Pedro Mesa`), and no replacement forwards the shorter forms (`Ms. Johnson`, `Sr. Pérez`). |
 | Python | Go or Rust | The detection ecosystem (GLiNER, Presidio, transformers) is Python. Detection dominates latency, not the proxy. |
 | Starlette + httpx | LiteLLM plugin only | Independent correctness; adapter possible later. |
 | Reject unknown endpoints and uninspectable content | Forward unchanged | Fail closed is the only safe default for this product. |

@@ -118,6 +118,21 @@ def test_propagation_settings_are_passed_through(
     assert batch.texts == expected
 
 
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ("", "[PERSON_1] wrote. [PERSON_1_B] will call."),
+        ("  person_tokens: true\n", "[PERSON_1] wrote. [PERSON_1_B] will call."),
+        ("  person_tokens: false\n", "[PERSON_1] wrote. Alice will call."),
+    ],
+    ids=["default", "on", "off"],
+)
+def test_person_tokens_are_passed_through(tmp_path: Path, config: str, expected: str) -> None:
+    settings = _settings(tmp_path, config, persons=_terms(("Alice Johnson", "PERSON")))
+    batch = build_pseudonymizer(settings).pseudonymize(["Alice Johnson wrote. Alice will call."])
+    assert batch.texts == (expected,)
+
+
 # The ml section alone, for configurations that _settings prefixes with a detection section.
 ML_SECTION = "  ml:\n    enabled: true\n"
 ML_ON = "detection:\n" + ML_SECTION

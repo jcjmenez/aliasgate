@@ -562,3 +562,25 @@ async def test_a_term_and_its_alias_reach_the_upstream_as_variants_and_come_back
     assert "ACME" not in route.calls.last.request.content.decode()
     assert _content(response) == "ACME and ACME Corporation"
     assert response.headers["x-aliasgate-entities"] == "2"
+
+
+async def test_shorter_forms_of_a_name_reach_the_upstream_as_variants_and_come_back_as_written(
+    make_client: ClientFactory, upstream: respx.MockRouter, tmp_path: Path
+) -> None:
+    (tmp_path / "persons.yaml").write_text(
+        "terms:\n  - term: Alice Johnson\n    type: PERSON\n", encoding="utf-8"
+    )
+    config = tmp_path / "persons-config.yaml"
+    config.write_text("detection:\n  dictionary:\n    files: [persons.yaml]\n", encoding="utf-8")
+    route = upstream.post(CHAT).respond(json=chat_response("[PERSON_1_B] and [PERSON_1]"))
+    async with make_client(load_settings(config, env={})) as client:
+        response = await client.post(
+            CHAT, json=chat_request("Alice Johnson wrote. Alice will call.")
+        )
+    assert response.status_code == 200
+    assert [message["content"] for message in _sent(route)["messages"]] == [
+        "[PERSON_1] wrote. [PERSON_1_B] will call.",
+    ]
+    assert "Alice" not in route.calls.last.request.content.decode()
+    assert _content(response) == "Alice and Alice Johnson"
+    assert response.headers["x-aliasgate-entities"] == "2"

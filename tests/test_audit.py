@@ -8,7 +8,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from aliasgate.audit import AuditResult, audit_outbound
-from aliasgate.mapping import Mapping
+from aliasgate.mapping import Entity, Mapping
 from aliasgate.terms import build_term_pattern, term_body
 
 SURFACES = ("Juan Pérez", "ACME Corporation", "juan.perez@example.com")
@@ -183,6 +183,53 @@ _JSON: st.SearchStrategy[Any] = st.recursive(
 )
 
 
+# Capitalised entities (slice 16): a person's name word that nobody detected is replaced only
+# where it starts with an upper-case letter, so the audit looks for it only there.
+
+
+def _with_capitalised(*words: str) -> Mapping:
+    mapping = Mapping()
+    person = mapping.assign("PERSON", "Pedro Mesa Lucía")
+    for word in words:
+        mapping.assign("PERSON", word, variant_of=person, capitalised=True)
+    return mapping
+
+
+@pytest.mark.parametrize("text", ["Mesa dijo que no.", "Según MESA, no.", "(Mesa)"])
+def test_a_capitalised_entity_is_reported_where_its_word_is_capitalised(text: str) -> None:
+    result = audit_outbound({"metadata": {"note": text}}, _with_capitalised("Mesa"), min_length=3)
+    assert result == AuditResult(1, ("PERSON",))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "la mesa está rota",
+        "mESA",
+        "".join(chr(0xFF21 + ord(char) - ord("A")) for char in "MESA"),
+        "Luci" + chr(0x301) + "a",
+    ],
+    ids=["lower-case", "lower-first", "full-width", "decomposed"],
+)
+def test_a_capitalised_entity_is_not_reported_for_a_lower_case_or_folded_form(text: str) -> None:
+    mapping = _with_capitalised("Mesa", "Lucía")
+    assert audit_outbound({"x": text}, mapping, min_length=3) == AuditResult(0, ())
+
+
+def test_other_entities_are_audited_exactly_as_before_next_to_capitalised_ones() -> None:
+    mapping = _with_capitalised("Mesa")
+    mapping.assign("ADDRESS", "Straße")
+    body = {"a": "la mesa", "b": "STRASSE 5", "c": "pedro mesa lucía"}
+    assert audit_outbound(body, mapping, min_length=3) == AuditResult(2, ("ADDRESS", "PERSON"))
+
+
+def test_a_mapping_of_capitalised_entities_only_is_audited_by_the_term_pattern() -> None:
+    mapping = Mapping()
+    mapping.assign("PERSON", "Mesa", capitalised=True)
+    assert audit_outbound({"x": "la mesa"}, mapping, min_length=3) == AuditResult(0, ())
+    assert audit_outbound({"x": "La Mesa"}, mapping, min_length=3) == AuditResult(1, ("PERSON",))
+
+
 def _insert(value: Any, path: list[int], surface: str) -> Any:
     """Put `surface` into one string, list or dict of `value`, chosen by `path`."""
     if isinstance(value, str):
@@ -215,17 +262,26 @@ def test_property_a_surface_anywhere_in_a_payload_is_found(
 
 
 def _reference(payload: list[str], mapping: Mapping, min_length: int) -> AuditResult:
-    """Each entity searched on its own, both ways: what the audit must be equal to."""
+    """Each entity searched on its own, both ways, or only by capitalised matches of its term
+    pattern for a capitalised entity: what the audit must be equal to."""
     folded = [unicodedata.normalize("NFKC", text).casefold() for text in payload]
+
+    def found(entity: Entity) -> bool:
+        matches = [
+            match.group()
+            for text in payload
+            for match in build_term_pattern(entity.surface).finditer(text)
+        ]
+        if entity.capitalised:
+            return any(match[0].isupper() or match[0].istitle() for match in matches)
+        return bool(matches) or any(
+            re.search(rf"(?<!\w)(?:{term_body(entity.key)})(?!\w)", text) for text in folded
+        )
+
     leaked = [
         entity
         for entity in mapping.entities()
-        if entity.entity_type != "LITERAL"
-        and len(entity.key) >= min_length
-        and (
-            any(build_term_pattern(entity.surface).search(text) for text in payload)
-            or any(re.search(rf"(?<!\w)(?:{term_body(entity.key)})(?!\w)", text) for text in folded)
-        )
+        if entity.entity_type != "LITERAL" and len(entity.key) >= min_length and found(entity)
     ]
     return AuditResult(len(leaked), tuple(sorted({entity.entity_type for entity in leaked})))
 
@@ -236,14 +292,16 @@ _PHRASE = st.lists(_WORDS, min_size=1, max_size=3).map(" ".join)
 
 
 @given(
-    st.lists(st.tuples(st.sampled_from(["PERSON", "ORG"]), _PHRASE), max_size=8),
+    st.lists(st.tuples(st.sampled_from(["PERSON", "ORG"]), _PHRASE, st.booleans()), max_size=8),
     st.lists(st.lists(_WORDS, max_size=6).map(" ".join), max_size=4),
     st.integers(min_value=1, max_value=6),
 )
 def test_property_the_combined_search_equals_searching_each_entity_alone(
-    entities: list[tuple[str, str]], payload: list[str], min_length: int
+    entities: list[tuple[str, str, bool]], payload: list[str], min_length: int
 ) -> None:
-    mapping = _mapping(*entities)
+    mapping = Mapping()
+    for entity_type, surface, capitalised in entities:
+        mapping.assign(entity_type, surface, capitalised=capitalised)
     assert audit_outbound(payload, mapping, min_length=min_length) == _reference(
         payload, mapping, min_length
     )

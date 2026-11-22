@@ -5,8 +5,8 @@ import unicodedata
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
-from aliasgate.mapping import Mapping
-from aliasgate.terms import build_term_pattern, term_body
+from aliasgate.mapping import Entity, Mapping
+from aliasgate.terms import build_term_pattern, starts_upper, term_body
 from aliasgate.types import LITERAL
 
 
@@ -29,7 +29,9 @@ def audit_outbound(payload: object, mapping: Mapping, *, min_length: int) -> Aud
     are skipped. An entity is found when its whole-term pattern matches (case-insensitive,
     flexible whitespace, as propagation searches), or when its key matches the string after
     NFKC normalisation and case folding, which also catches variants with the same key that
-    the pattern misses, such as "STRASSE" for "Straße".
+    the pattern misses, such as "STRASSE" for "Straße". A capitalised entity is found only by
+    a match of its pattern that starts with an upper-case or title-case letter, as propagation
+    replaces it.
     """
     entities = [
         entity
@@ -40,20 +42,26 @@ def audit_outbound(payload: object, mapping: Mapping, *, min_length: int) -> Aud
         return AuditResult(0, ())
     strings = list(_string_values(payload))
     folded = [_fold(text) for text in strings]
-    # One alternation per side finds whether any entity occurs, in one pass per string. Only
-    # when one does is each entity searched on its own, to count them.
+    # One alternation per side finds whether any entity may occur, in one pass per string.
+    # Only when one may is each entity searched on its own, to decide and count. Capitalised
+    # entities join the term alternation as a pre-filter, never the key alternation.
     longest_first = sorted(entities, key=lambda entity: -len(entity.surface))
     any_term = _whole_terms((term_body(entity.surface) for entity in longest_first), re.IGNORECASE)
-    any_key = _whole_terms(term_body(entity.key) for entity in longest_first)
-    if not _search(any_term, strings) and not _search(any_key, folded):
+    keyed = [entity for entity in longest_first if not entity.capitalised]
+    any_key = _whole_terms(term_body(entity.key) for entity in keyed) if keyed else None
+    if not _search(any_term, strings) and (any_key is None or not _search(any_key, folded)):
         return AuditResult(0, ())
-    leaked = [
-        entity
-        for entity in entities
-        if _search(build_term_pattern(entity.surface), strings)
-        or _search(_whole_terms([term_body(entity.key)]), folded)
-    ]
+    leaked = [entity for entity in entities if _found(entity, strings, folded)]
     return AuditResult(len(leaked), tuple(sorted({entity.entity_type for entity in leaked})))
+
+
+def _found(entity: Entity, strings: list[str], folded: list[str]) -> bool:
+    pattern = build_term_pattern(entity.surface)
+    if entity.capitalised:
+        return any(
+            starts_upper(match.group()) for text in strings for match in pattern.finditer(text)
+        )
+    return _search(pattern, strings) or _search(_whole_terms([term_body(entity.key)]), folded)
 
 
 def _whole_terms(bodies: Iterable[str], flags: int = 0) -> re.Pattern[str]:

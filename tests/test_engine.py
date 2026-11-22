@@ -1,4 +1,5 @@
 import re
+import time
 from collections import Counter
 
 import pytest
@@ -14,6 +15,9 @@ from aliasgate.engine import (
     count_unresolved,
     restore,
 )
+from aliasgate.eval.metrics import expected_restoration
+from aliasgate.mapping import normalize_key
+from aliasgate.names import name_tokens
 from aliasgate.terms import build_term_pattern
 from aliasgate.types import (
     PRIORITY_DICTIONARY,
@@ -595,3 +599,383 @@ def test_with_url_enabled_a_url_holding_an_email_is_replaced_whole() -> None:
     # priority.
     assert batch.texts == ("Reset at [URL_1] or write to [EMAIL_1].",)
     assert restore(batch.texts[0], batch.mapping) == text
+
+
+# Person name tokens (slice 16) ----------------------------------------------------------------
+
+ALICE = "Alice Johnson opened the ticket. Ms. Johnson replied. Alice called."
+
+
+def _people(*names: str, extra: dict[str, str] | None = None, **kwargs: object) -> Pseudonymizer:
+    """An engine whose fake detector finds the given full names, case-sensitively, as PERSON."""
+    words = dict.fromkeys(names, "PERSON") | (extra or {})
+    options: dict[str, object] = {"person_tokens": True, **kwargs}
+    return Pseudonymizer([WordListDetector(words)], **options)  # type: ignore[arg-type]
+
+
+def test_shorter_forms_of_a_detected_name_become_its_variants_and_restore_as_written() -> None:
+    batch = _people("Alice Johnson").pseudonymize([ALICE])
+    assert batch.texts == (
+        "[PERSON_1] opened the ticket. Ms. [PERSON_1_B] replied. [PERSON_1_C] called.",
+    )
+    assert _restored(batch) == [ALICE]
+    assert [(e.surface, e.capitalised) for e in batch.mapping.entities()] == [
+        ("Alice Johnson", False),
+        ("Johnson", True),
+        ("Alice", True),
+    ]
+
+
+def test_the_spanish_first_surname_is_a_variant_of_the_full_name() -> None:
+    text = "Juan Pérez García abrió la incidencia. Según el Sr. Pérez, falta la firma."
+    batch = _people("Juan Pérez García").pseudonymize([text])
+    assert batch.texts == (
+        "[PERSON_1] abrió la incidencia. Según el Sr. [PERSON_1_B], falta la firma.",
+    )
+    assert _restored(batch) == [text]
+
+
+@pytest.mark.parametrize(
+    ("full", "shorter", "text"),
+    [
+        ("Juan Pérez García", "Pérez", "Juan Pérez García llamó. Pérez pagó."),
+        ("Juan Pérez García", "Juan Pérez", "Juan Pérez García llamó. Juan Pérez pagó."),
+        ("Alice Johnson", "Dr. Alice Johnson", "Alice Johnson called. Dr. Alice Johnson paid."),
+    ],
+    ids=["surname", "run", "title"],
+)
+def test_a_detected_shorter_form_links_instead_of_getting_its_own_number(
+    full: str, shorter: str, text: str
+) -> None:
+    batch = _people(full, shorter).pseudonymize([text])
+    entities = batch.mapping.entities()
+    assert [(e.surface, e.placeholder, e.capitalised) for e in entities] == [
+        (full, "[PERSON_1]", False),
+        (shorter, "[PERSON_1_B]", False),
+    ]
+    assert _restored(batch) == [text]
+
+
+def test_a_detected_form_that_skips_a_word_does_not_link() -> None:
+    batch = _people("Juan Pérez García", "Juan García").pseudonymize(
+        ["Juan Pérez García llamó. Juan García pagó."]
+    )
+    assert batch.texts == ("[PERSON_1] llamó. [PERSON_2] pagó.",)
+
+
+def test_a_detected_word_of_two_persons_gets_its_own_number() -> None:
+    batch = _people("Bob Smith", "Alice Smith", "Smith").pseudonymize(
+        ["Bob Smith and Alice Smith called. Smith paid."]
+    )
+    assert batch.texts == ("[PERSON_1] and [PERSON_2] called. [PERSON_3] paid.",)
+
+
+def test_a_dictionary_span_with_a_link_keeps_its_group_even_if_it_is_a_persons_word() -> None:
+    terms = [Term("Alice Johnson", "PERSON"), Term("Alice", "PERSON", ("Ally",))]
+    engine = Pseudonymizer([DictionaryDetector(terms)], person_tokens=True)
+    batch = engine.pseudonymize(["Alice Johnson wrote. Alice and Ally called."])
+    assert batch.texts == ("[PERSON_1] wrote. [PERSON_2] and [PERSON_2_B] called.",)
+
+
+def test_a_detected_span_of_another_type_is_never_linked_to_a_person() -> None:
+    batch = _people("Alice Johnson", extra={"Johnson": "ORG"}).pseudonymize(
+        ["Alice Johnson met Johnson."]
+    )
+    assert batch.texts == ("[PERSON_1] met [ORG_1].",)
+
+
+@pytest.mark.parametrize("full", ["J. R. Smith", "Dr. Smith"])
+def test_a_name_with_a_single_name_token_is_not_a_person(full: str) -> None:
+    # Known gap (docs/usage.md §7): only a name with two name tokens gives its words.
+    batch = _people(full).pseudonymize([f"{full} called. Smith paid."])
+    assert batch.texts == ("[PERSON_1] called. Smith paid.",)
+
+
+def test_a_name_that_is_also_a_common_word_is_replaced_only_where_capitalised() -> None:
+    text = "Rose Brown sent it. Brown says the brown box is damaged."
+    batch = _people("Rose Brown").pseudonymize([text])
+    assert batch.texts == ("[PERSON_1] sent it. [PERSON_1_B] says the brown box is damaged.",)
+    assert _restored(batch) == [text]
+
+
+def test_a_name_word_that_occurs_only_in_lower_case_creates_no_entity() -> None:
+    batch = _people("Alice Johnson").pseudonymize(["Alice Johnson wrote. thanks alice, got it"])
+    assert batch.texts == ("[PERSON_1] wrote. thanks alice, got it",)
+    assert len(batch.mapping) == 1
+
+
+def test_a_capitalised_common_word_equal_to_a_name_word_is_replaced_too() -> None:
+    # The expected false positive of decision 1: "Will" starts a question here.
+    batch = _people("Will Stone").pseudonymize(["Will Stone sent the file. Will you check it?"])
+    assert batch.texts == ("[PERSON_1] sent the file. [PERSON_1_B] you check it?",)
+
+
+def test_a_word_two_persons_share_in_one_text_gets_its_own_number() -> None:
+    text = "Bob Smith and Alice Smith called. Smith paid; Bob and Alice left."
+    batch = _people("Bob Smith", "Alice Smith").pseudonymize([text])
+    assert batch.texts == (
+        "[PERSON_1] and [PERSON_2] called. [PERSON_3] paid; [PERSON_1_B] and [PERSON_2_B] left.",
+    )
+    assert _restored(batch) == [text]
+
+
+def test_a_person_in_a_later_text_never_changes_an_earlier_link() -> None:
+    texts = ["Bob Smith called. Smith paid.", "Alice Smith called. Smith left."]
+    batch = _people("Bob Smith", "Alice Smith").pseudonymize(texts)
+    assert batch.texts == (
+        "[PERSON_1] called. [PERSON_1_B] paid.",
+        "[PERSON_2] called. [PERSON_1_B] left.",
+    )
+
+
+def test_a_shorter_form_before_the_full_name_in_the_same_text_is_linked() -> None:
+    text = "Alice called on Monday. Later, Alice Johnson sent the form."
+    batch = _people("Alice Johnson").pseudonymize([text])
+    assert batch.texts == ("[PERSON_1_B] called on Monday. Later, [PERSON_1] sent the form.",)
+    assert _restored(batch) == [text]
+
+
+def test_a_shorter_form_in_an_earlier_text_is_replaced_once_a_later_text_names_the_person() -> None:
+    engine = _people("Alice Johnson")
+    assert engine.pseudonymize(["Johnson called.", "Alice Johnson sent the form."]).texts == (
+        "[PERSON_1_B] called.",
+        "[PERSON_1] sent the form.",
+    )
+    assert engine.pseudonymize(["Johnson called."]).texts == ("Johnson called.",)
+
+
+@pytest.mark.parametrize(
+    ("full", "after"),
+    [
+        ("Sr. Juan Pérez", " Sr. Ruiz did not."),
+        ("María del Mar Rosa", " Del Valle did not."),
+        ("Alice J. Johnson", " J. did not."),
+        ("Wei Li Zhang", " Li did not."),
+    ],
+    ids=["title", "particle", "initial", "short"],
+)
+def test_titles_particles_initials_and_short_words_never_become_entities(
+    full: str, after: str
+) -> None:
+    batch = _people(full).pseudonymize([f"{full} wrote.{after}"])
+    assert batch.texts == (f"[PERSON_1] wrote.{after}",)
+    assert len(batch.mapping) == 1
+
+
+def test_an_allow_listed_name_word_is_not_replaced() -> None:
+    text = "Alice Mary Johnson wrote. Johnson and Mary called."
+    batch = _people("Alice Mary Johnson", allow_list=["johnson"]).pseudonymize([text])
+    assert batch.texts == ("[PERSON_1] wrote. Johnson and [PERSON_1_B] called.",)
+
+
+def test_a_name_word_whose_key_is_already_an_organisation_stays_that_entity() -> None:
+    text = "JOHNSON shipped it. Alice Johnson called. Johnson paid."
+    batch = _people("Alice Johnson", extra={"JOHNSON": "ORG"}).pseudonymize([text])
+    assert batch.texts == ("[ORG_1] shipped it. [PERSON_1] called. [ORG_1] paid.",)
+    assert len(batch.mapping) == 2
+
+
+def test_without_propagation_only_detected_shorter_forms_are_linked() -> None:
+    text = "Juan Pérez García llamó. Pérez pagó; Juan se fue."
+    batch = _people("Juan Pérez García", "Pérez", propagate=False).pseudonymize([text])
+    assert batch.texts == ("[PERSON_1] llamó. [PERSON_1_B] pagó; Juan se fue.",)
+    assert len(batch.mapping) == 2
+
+
+def test_with_person_tokens_off_the_output_is_that_of_slice_15() -> None:
+    assert _people("Alice Johnson", person_tokens=False).pseudonymize([ALICE]).texts == (
+        "[PERSON_1] opened the ticket. Ms. Johnson replied. Alice called.",
+    )
+    detected = _people("Juan Pérez García", "Pérez", person_tokens=False)
+    assert detected.pseudonymize(["Juan Pérez García llamó. Pérez pagó."]).texts == (
+        "[PERSON_1] llamó. [PERSON_2] pagó.",
+    )
+
+
+def test_person_tokens_are_off_by_default() -> None:
+    engine = Pseudonymizer([WordListDetector({"Alice Johnson": "PERSON"})])
+    assert engine.pseudonymize([ALICE]).texts == (
+        "[PERSON_1] opened the ticket. Ms. Johnson replied. Alice called.",
+    )
+
+
+def test_a_dictionary_persons_words_take_letters_after_the_aliases_seen_so_far() -> None:
+    dictionary = DictionaryDetector([Term("Alice Johnson", "PERSON", ("AJ", "A. Johnson"))])
+    engine = Pseudonymizer([dictionary], person_tokens=True)
+    texts = ["Alice Johnson wrote. AJ called. Johnson paid.", "A. Johnson replied."]
+    batch = engine.pseudonymize(texts)
+    assert batch.texts == (
+        "[PERSON_1] wrote. [PERSON_1_B] called. [PERSON_1_C] paid.",
+        "[PERSON_1_D] replied.",
+    )
+    assert _restored(batch) == texts
+
+
+def test_placeholder_literals_next_to_a_full_name_stay_literals() -> None:
+    text = "[PERSON_1] is not Alice Johnson. Johnson knows."
+    batch = _people("Alice Johnson").pseudonymize([text])
+    assert batch.texts == ("[LITERAL_1] is not [PERSON_1]. [PERSON_1_B] knows.",)
+    assert _restored(batch) == [text]
+
+
+def test_analyze_reports_undetected_shorter_forms_as_propagation() -> None:
+    spans = _people("Alice Johnson").analyze([ALICE])[0]
+    assert [(span.start, span.end, span.source) for span in spans] == [
+        (0, 13, "fake"),
+        (37, 44, "propagation"),
+        (54, 59, "propagation"),
+    ]
+
+
+def test_a_name_words_entity_may_exist_without_a_replaced_occurrence() -> None:
+    # Its only occurrence on its own lies inside a repeat of the full name that the detector
+    # missed, and propagation gives that whole repeat to the full name first.
+    text = "Alice Johnson wrote. ALICE JOHNSON again."
+    batch = _people("Alice Johnson").pseudonymize([text])
+    assert batch.texts == ("[PERSON_1] wrote. [PERSON_1] again.",)
+    assert [e.placeholder for e in batch.mapping.entities()] == [
+        "[PERSON_1]",
+        "[PERSON_1_B]",
+        "[PERSON_1_C]",
+    ]
+
+
+# Properties of person name tokens.
+
+_NAMES = (
+    "Alice Johnson",
+    "Bob Smith",
+    "Alice Smith",
+    "Will Stone",
+    "Juan Pérez García",
+    "Juan Pérez",
+    "Ana Pérez",
+    "Dr. Lucía Romero",
+    "Lucía Romero",
+    "Mary Ann Lee",
+    "Liam O'Connor",
+)
+_NAME_WORDS = sorted({word for name in _NAMES for word in name.split() if len(word) >= 3})
+_CASES = sorted(
+    {form for word in _NAME_WORDS for form in (word, word.lower(), word.upper(), word.swapcase())}
+)
+_PERSON_TOKENS = st.one_of(
+    st.sampled_from([f"{name} " for name in _NAMES]),
+    st.sampled_from([f"{form} " for form in _CASES]),
+    st.sampled_from([f"{form} " for form in _CASES]),
+    st.sampled_from(
+        [
+            "the ", "said ", ". ", ", ", "\n", "'s ", "(", ") ", "Sr. ", "Ms. ", "de ", "x",
+            "[", "]", "_", "1", "PERSON", "-", "",
+        ]
+    ),
+)  # fmt: skip
+_PERSON_BATCH = st.lists(
+    st.lists(_PERSON_TOKENS, min_size=1, max_size=14).map("".join), min_size=1, max_size=4
+)
+_PERSON_PROPERTY = settings(max_examples=300, deadline=None)
+
+
+def _named(*, propagate: bool = True) -> Pseudonymizer:
+    return _people(*_NAMES, propagate=propagate)
+
+
+def _starts_upper(text: str) -> bool:
+    return text[:1].isupper() or text[:1].istitle()
+
+
+@_PERSON_PROPERTY
+@given(_PERSON_BATCH)
+def test_property_round_trip_with_person_tokens_gives_the_expected_restoration(
+    texts: list[str],
+) -> None:
+    engine = _named()
+    batch = engine.pseudonymize(texts)
+    spans = engine.analyze(texts)
+    for text, done, found in zip(texts, batch.texts, spans, strict=True):
+        expected = expected_restoration(text, found, batch.mapping)
+        assert expected is not None
+        assert restore(done, batch.mapping) == expected
+
+
+@_PERSON_PROPERTY
+@given(_PERSON_BATCH)
+def test_property_no_capitalised_word_of_a_person_is_left_on_its_own(texts: list[str]) -> None:
+    batch = _named().pseudonymize(texts)
+    persons = [
+        entity
+        for entity in batch.mapping.entities()
+        if entity.entity_type == "PERSON" and len(name_tokens(entity.surface, min_length=3)) >= 2
+    ]
+    for person in persons:
+        for key in name_tokens(person.surface, min_length=3):
+            for text in batch.texts:
+                for match in build_term_pattern(key).finditer(text):
+                    assert not (
+                        _starts_upper(match.group()) and normalize_key(match.group()) == key
+                    ), "a capitalised name word was left in the output"
+
+
+@_PERSON_PROPERTY
+@given(_PERSON_BATCH, _PERSON_BATCH, st.booleans())
+def test_property_appending_texts_keeps_every_entity_with_person_tokens(
+    first: list[str], appended: list[str], propagate: bool
+) -> None:
+    short = _named(propagate=propagate).pseudonymize(first)
+    long = _named(propagate=propagate).pseudonymize(first + appended)
+    if not propagate:
+        assert long.texts[: len(first)] == short.texts
+    for entity in short.mapping.entities():
+        kept = long.mapping.get(entity.key)
+        assert kept is not None
+        assert (kept.placeholder, kept.variant, kept.surface, kept.capitalised) == (
+            entity.placeholder,
+            entity.variant,
+            entity.surface,
+            entity.capitalised,
+        )
+
+
+@_PERSON_PROPERTY
+@given(_PERSON_BATCH)
+def test_property_person_tokens_are_deterministic(texts: list[str]) -> None:
+    first = _named().pseudonymize(texts)
+    second = _named().pseudonymize(texts)
+    assert first.texts == second.texts
+    assert first.mapping.entities() == second.mapping.entities()
+
+
+class _RunDetector:
+    """Finds every two-word name made of the letters this test generates, with one regex."""
+
+    name = "names"
+    _PATTERN = re.compile(r"\bXa[a-z]+ Yb[a-z]+\b")
+
+    def detect(self, text: str) -> list[Span]:
+        return [
+            Span(match.start(), match.end(), "PERSON", 0.9, self.name, PRIORITY_ML)
+            for match in self._PATTERN.finditer(text)
+        ]
+
+
+def _letters(number: int) -> str:
+    digits = []
+    for _ in range(4):
+        number, digit = divmod(number, 26)
+        digits.append(chr(ord("a") + digit))
+    return "".join(digits)
+
+
+def test_words_nobody_detected_are_searched_once_per_text() -> None:
+    # 1,000 texts, each naming a new person whose words never stand alone, so every candidate
+    # stays pending. Searching every pending candidate in every earlier text after each text
+    # would be cubic and take far longer than the bound (slice 16 pull request).
+    texts = [
+        f"Ticket {index}: Xa{_letters(index)} Yb{_letters(index)} called." for index in range(1000)
+    ]
+    engine = Pseudonymizer([_RunDetector()], person_tokens=True)
+    started = time.perf_counter()
+    batch = engine.pseudonymize(texts)
+    elapsed = time.perf_counter() - started
+    assert len(batch.mapping) == 1000
+    assert elapsed < 15
