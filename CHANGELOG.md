@@ -7,6 +7,11 @@ change the configuration or the command line.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-22
+
+Person name linking. The shorter forms of a detected person's name, which 0.3.0 forwarded
+unchanged, are replaced as variants of that person, which changes the numbering.
+
 ### Added
 
 - Link scores in the evaluation harness. Gold spans may name their entity with an optional
@@ -111,7 +116,8 @@ it has not run in production yet. Read the threat model before relying on it.
   offline), non-root, with no configuration inside.
 - Documentation: usage, deployment, architecture, threat model, evaluation.
 
-[Unreleased]: https://github.com/jcjmenez/aliasgate/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jcjmenez/aliasgate/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jcjmenez/aliasgate/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jcjmenez/aliasgate/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jcjmenez/aliasgate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jcjmenez/aliasgate/releases/tag/v0.1.0

@@ -7,7 +7,7 @@
 # authentication (docs/deployment.md).
 services:
   aliasgate:
-    image: ghcr.io/jcjmenez/aliasgate:0.3.0 # or 0.3.0-ml, with detection.ml.enabled: true
+    image: ghcr.io/jcjmenez/aliasgate:0.4.0 # or 0.4.0-ml, with detection.ml.enabled: true
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
