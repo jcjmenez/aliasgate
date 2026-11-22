@@ -35,7 +35,7 @@ writable file system. Mount the configuration and dictionaries read-only at `/et
 ```bash
 docker run -d --name aliasgate -p 127.0.0.1:8080:8080 \
   --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
-  -v /srv/aliasgate:/etc/aliasgate:ro ghcr.io/jcjmenez/aliasgate:0.3.0
+  -v /srv/aliasgate:/etc/aliasgate:ro ghcr.io/jcjmenez/aliasgate:0.4.0
 ```
 
 - The image has a `HEALTHCHECK` on `GET /healthz`; use the same path for readiness and liveness
