@@ -38,7 +38,8 @@ writes it. The most important ones:
 - Describe what changed, why, and how you tested it.
 - If the change touches detection, include before and after numbers from the
   [evaluation harness](docs/evaluation.md) (`uv run python -m aliasgate.eval
-  tests/eval/corpus/*.jsonl`).
+  tests/eval/corpus/synthetic.*.jsonl`, and for person names `uv run python -m aliasgate.eval
+  --config tests/eval/corpus/persons.yaml tests/eval/corpus/persons.*.jsonl`).
 - If the change touches a security invariant listed in
   [docs/threat-model.md](docs/threat-model.md), say so explicitly.
 

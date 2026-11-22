@@ -1,0 +1,5 @@
+# Configuration for the person corpus: the dictionary finds every full name, so shorter forms
+# are measured on their own. Synthetic values only.
+detection:
+  dictionary:
+    files: [persons.terms.yaml]

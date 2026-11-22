@@ -49,6 +49,105 @@ unchanged. In other contexts the model did find some short forms (`Sra. Romero V
 span in one text, `Pérez` alone in another). It then gave them a number unrelated to the full
 name.
 
+## Decisions made while implementing
+
+Four questions were asked on 2026-11-22, and the maintainer chose the recommended option each
+time:
+
+1. **`other` and shared words.** The test list said that persons share no word outside
+   `shared-last` and `shared-first`, but in `other` the second person is named by a word of the
+   first one's name. The test asserts that in `other` the second person is named by one word,
+   the first word of the first person's first mention, and that this is the only word they
+   share. In the 11 remaining categories, persons share none.
+2. **What the dictionary holds.** The test list said "the first mention of every person", but
+   in `before` the first mention is a shorter form, and the second person of `other` has no full
+   name. Putting those in the dictionary would detect the shorter forms. The dictionary holds
+   the first full-name mention of every person who has one, as the format section says, and
+   the test compares the whole list, in order.
+3. **Gender.** `title` needs `Ms.`/`Mr.` and `la Sra.`/`el Sr.` to agree with the name, which
+   `first_name()` does not tell. The generator draws a gender for each person and uses Faker's
+   `first_name_female()` or `first_name_male()` (the same lists, split). The listed first names
+   of `sentence` carry their own gender. Spanish titles include their article, so Spanish
+   templates use them only inside a sentence. The rest of the templates are gender-neutral.
+4. **Collisions.** The dictionary of full names applies to every example. The generator draws
+   a person again when a shorter form of several words, anywhere in both corpora, contains a
+   full name (or the other way round), and when a name word occurs outside the gold spans of
+   its example, apart from the listed word of `word` and `sentence`. Neither rule rejected a
+   drawing of the committed corpus, so unit tests force both, and tests on the committed files
+   check both properties.
+
+Other choices:
+
+- **Templates.** Slots are `{a}`, `{b}` (full names), `{a.first}`, `{a.last}`,
+  `{a.middle}`, `{a.last2}`, `{a.first_last}`, `{a.middle_last}`, `{a.surnames}`, an
+  optional `|lower`, `{a.title}` (outside the span), `{org}` and `{common}`. The examples of
+  a category alternate between its two templates (`001` is the first, `002` the second).
+  `full`, the second templates of `first` and `last`, and the shared and `other` categories
+  name two persons. Spanish templates avoid `y` and `o` before a name, which become `e` and `u`
+  before some names. In English `run`, the full name includes the middle name. The common-word
+  uses (`the brown box`, `Will you check it?`) are a fixed phrase per listed word and template.
+  Templates contain no value the rules detect, so the gate of slice 16 on `word` sees only names.
+- **Families.** Predicted spans of any type give a gold span its family, as they cover it. A
+  placeholder literal, or a span whose entity is not in the mapping, has none. Wrong merges are
+  listed only for the types that get a `LinkScore`, so a corpus without ids has none.
+- **The existing glob.** `docs/evaluation.md` and `CONTRIBUTING.md` ran the harness on
+  `tests/eval/corpus/*.jsonl`, which now also matches the person corpus and would merge it into
+  the same languages. Both now use `synthetic.*.jsonl`, and CONTRIBUTING also gives the person
+  corpus command.
+- **Tests beyond the list.** Two spans without an id are two entities (a mutation that
+  compared `None == None` survived without it). Spans of different types never pair, pairs
+  never cross examples, a placeholder literal has no family, valid ids of 64 characters, wrong
+  merges ordered across examples. For the generator: two templates per category, determinism,
+  name words of at least three letters that are no title or particle, a lower-case shorter form
+  in `lower`, the organisation of `org`.
+- **Measured.** Each rule was broken on purpose and a test failed: the variant letter, the tie
+  rule, pairs of different types, wrong merges of types without ids, two spans without ids,
+  propagated spans, the id length, ids shared across types, the linking table, and the three
+  generator rules. The generator writes both corpora in under a second.
+
+**Per category, with the dictionary** (`persons.yaml`, what CI runs). `placed` counts the full
+names; every other mention leaked whole. No wrong pair anywhere, because only full names are
+replaced:
+
+| Category | en: mentions | en: placed | en: `PERSON` leaked chars | en: wrong pairs | es: mentions | es: placed | es: `PERSON` leaked chars | es: wrong pairs |
+|---|---|---|---|---|---|---|---|---|
+| `full` | 60 | 60 | 0 of 761 | 0 | 60 | 60 | 0 of 1270 | 0 |
+| `first` | 60 | 30 | 186 of 583 | 0 | 60 | 30 | 198 of 812 | 0 |
+| `last` | 60 | 30 | 187 of 592 | 0 | 60 | 30 | 176 of 797 | 0 |
+| `title` | 40 | 20 | 131 of 392 | 0 | 40 | 20 | 121 of 535 | 0 |
+| `before` | 40 | 20 | 118 of 381 | 0 | 40 | 20 | 119 of 543 | 0 |
+| `run` | 60 | 20 | 497 of 878 | 0 | 60 | 20 | 531 of 946 | 0 |
+| `possessive` | 40 | 20 | 125 of 391 | 0 | 40 | 20 | 125 of 556 | 0 |
+| `shared-last` | 100 | 40 | 348 of 852 | 0 | 100 | 40 | 392 of 1240 | 0 |
+| `shared-first` | 100 | 40 | 358 of 874 | 0 | 100 | 40 | 397 of 1264 | 0 |
+| `other` | 50 | 20 | 181 of 446 | 0 | 50 | 20 | 182 of 576 | 0 |
+| `word` | 40 | 20 | 93 of 321 | 0 | 40 | 20 | 85 of 473 | 0 |
+| `sentence` | 40 | 20 | 75 of 299 | 0 | 40 | 20 | 66 of 416 | 0 |
+| `lower` | 40 | 20 | 119 of 382 | 0 | 40 | 20 | 128 of 557 | 0 |
+| `org` | 40 | 20 | 129 of 409 | 0 | 40 | 20 | 126 of 542 | 0 |
+
+**Per category, with the ML layer and no dictionary** (for slice 16, not required). Pairs are
+counted as `same_pairs` / `linked` / `wrong`. In English `run` the model covered only 6 of the
+20 three-word names whole, and in Spanish it missed part of one full name in `first` and one in
+`before`:
+
+| Category | en: placed | en: `PERSON` leaked chars | en: same / linked / wrong | es: placed | es: `PERSON` leaked chars | es: same / linked / wrong |
+|---|---|---|---|---|---|---|
+| `full` | 60 | 0 | 20 / 20 / 0 | 60 | 0 | 20 / 20 / 0 |
+| `first` | 30 | 186 | 0 / 0 / 0 | 30 | 206 | 0 / 0 / 0 |
+| `last` | 30 | 187 | 0 / 0 / 0 | 30 | 176 | 0 / 0 / 0 |
+| `title` | 28 | 79 | 8 / 0 / 0 | 20 | 121 | 0 / 0 / 0 |
+| `before` | 20 | 118 | 0 / 0 / 0 | 20 | 130 | 0 / 0 / 0 |
+| `run` | 49 | 221 | 42 / 14 / 0 | 28 | 418 | 8 / 0 / 0 |
+| `possessive` | 20 | 125 | 0 / 0 / 0 | 20 | 125 | 0 / 0 / 0 |
+| `shared-last` | 47 | 306 | 7 / 0 / 0 | 47 | 347 | 7 / 0 / 0 |
+| `shared-first` | 40 | 358 | 0 / 0 / 0 | 40 | 397 | 0 / 0 / 0 |
+| `other` | 20 | 181 | 0 / 0 / 0 | 22 | 170 | 1 / 1 / 0 |
+| `word` | 20 | 93 | 0 / 0 / 0 | 20 | 85 | 0 / 0 / 0 |
+| `sentence` | 20 | 75 | 0 / 0 / 0 | 20 | 66 | 0 / 0 / 0 |
+| `lower` | 20 | 119 | 0 / 0 / 0 | 20 | 128 | 0 / 0 / 0 |
+| `org` | 20 | 129 | 0 / 0 / 0 | 20 | 126 | 0 / 0 / 0 |
+
 ## Dependencies to add
 
 None. Faker is already a development dependency (slice 11).

@@ -1,8 +1,8 @@
 """`python -m aliasgate.eval CORPUS...`: measure detection on labelled corpora, per language.
 
 The engine is built from the configuration exactly as the gateway builds it. The output holds
-numbers, entity types and example ids, never example text. Exit codes: 0, 1 when a leak rate is
-above `--max-leak-rate`, 2 for invalid input or a failure.
+numbers, entity types, example ids and offsets, never example text or entity ids. Exit codes:
+0, 1 when a leak rate is above `--max-leak-rate`, 2 for invalid input or a failure.
 """
 
 import argparse
@@ -78,6 +78,13 @@ def _parser() -> argparse.ArgumentParser:
         metavar="N",
         help="list up to N missed spans by example id and offsets",
     )
+    parser.add_argument(
+        "--show-wrong-merges",
+        type=_count,
+        default=0,
+        metavar="N",
+        help="list up to N pairs of mentions of two entities given one placeholder family",
+    )
     return parser
 
 
@@ -104,11 +111,13 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] = os.envir
     except Exception as exc:  # anything else may carry text in its message
         return _fail(f"evaluation failed ({type(exc).__name__})")
     if args.format == "json":
-        print(format_json(reports, misses=args.show_misses))
+        print(format_json(reports, misses=args.show_misses, wrong_merges=args.show_wrong_merges))
     else:
         print(
             "\n\n".join(
-                format_table(lang, report, misses=args.show_misses)
+                format_table(
+                    lang, report, misses=args.show_misses, wrong_merges=args.show_wrong_merges
+                )
                 for lang, report in reports.items()
             )
         )
