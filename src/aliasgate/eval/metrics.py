@@ -3,19 +3,26 @@
 The headline number is the leak rate: the share of gold characters that no predicted span
 covers, whatever its type. Recall by overlap ignores the type on purpose, because a person
 detected as an organisation is still protected.
+
+Where gold spans carry entity ids, link scores count pairs of mentions within an example: two
+mentions of one entity should share a placeholder family (type and number, the variant letter
+ignored), and two mentions of different entities should not.
 """
 
 from collections import Counter
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from aliasgate.engine import Pseudonymizer, restore
 from aliasgate.eval.corpus import Example, GoldSpan
 from aliasgate.mapping import Entity, Mapping, normalize_key
+from aliasgate.placeholders import TOLERANT, parse_match
 from aliasgate.terms import build_term_pattern
 from aliasgate.types import LITERAL, Span
 
 _PROPAGATION_SOURCE = "propagation"
+
+type _Family = tuple[str, int]  # placeholder type and number
 
 
 def _ratio(numerator: int, denominator: int, *, empty: float) -> float:
@@ -61,12 +68,47 @@ class Miss:
 
 
 @dataclass(frozen=True, slots=True)
+class LinkScore:
+    """Pairwise link counts for one entity type, within examples. Recall and precision are 1.0
+    when their denominator is 0."""
+
+    entity_type: str
+    mentions: int  # gold spans of the type
+    placed: int  # of them, the ones with a family
+    same_pairs: int  # pairs of placed mentions of one gold entity
+    linked_pairs: int  # of those, the pairs in one family
+    wrong_pairs: int  # pairs of placed mentions of two gold entities in one family
+
+    @property
+    def link_recall(self) -> float:
+        """linked_pairs / same_pairs, or 1.0 without such pairs."""
+        return _ratio(self.linked_pairs, self.same_pairs, empty=1.0)
+
+    @property
+    def link_precision(self) -> float:
+        """linked_pairs / (linked_pairs + wrong_pairs), or 1.0 when both are 0."""
+        return _ratio(self.linked_pairs, self.linked_pairs + self.wrong_pairs, empty=1.0)
+
+
+@dataclass(frozen=True, slots=True)
+class WrongMerge:
+    """Two gold mentions of different entities in one placeholder family: positions only."""
+
+    example_id: str
+    first: tuple[int, int]
+    second: tuple[int, int]
+    entity_type: str
+
+
+@dataclass(frozen=True, slots=True)
 class Report:
     """Scores of one evaluation, by entity type, plus leak, round-trip and false-alarm counts.
 
     `entity_free` counts the examples without gold spans and `entity_free_flagged` those of
     them with at least one predicted span. With a type restriction, both count only spans of
-    the selected types.
+    the selected types. `linking` has a score for each scored type with at least one entity
+    id, sorted by type; `wrong_merges` lists the wrong pairs of those types, by example, then
+    by first span, then by second span.
     """
 
     by_type: tuple[TypeScore, ...]
@@ -77,6 +119,8 @@ class Report:
     entity_free: int
     entity_free_flagged: int
     misses: tuple[Miss, ...]
+    linking: tuple[LinkScore, ...] = ()
+    wrong_merges: tuple[WrongMerge, ...] = ()
 
     @property
     def leak_rate(self) -> float:
@@ -98,7 +142,7 @@ def evaluate(
     """Run the whole engine on each example as its own batch and score its final spans.
 
     With `types`, only gold and predicted spans of those types are scored, but a predicted
-    span of any type still covers gold characters.
+    span of any type still covers gold characters and gives a gold span its family.
     """
     gold_counts: Counter[str] = Counter()
     predicted_counts: Counter[str] = Counter()
@@ -106,6 +150,7 @@ def evaluate(
     overlap: Counter[str] = Counter()
     leaked = gold_chars = failures = entity_free = flagged = 0
     misses: list[Miss] = []
+    links = _LinkCounts()
     for example in examples:
         spans = pseudonymizer.analyze([example.text])[0]
         batch = pseudonymizer.pseudonymize([example.text])
@@ -113,6 +158,7 @@ def evaluate(
         if restore(batch.texts[0], batch.mapping) != expected:
             failures += 1
         gold = [span for span in example.spans if types is None or span.entity_type in types]
+        links.add(example, gold, spans, batch.mapping)
         predicted = [span for span in spans if types is None or span.entity_type in types]
         predicted_counts.update(span.entity_type for span in predicted)
         if not gold:
@@ -144,8 +190,103 @@ def evaluate(
         for name in sorted(gold_counts.keys() | predicted_counts.keys())
     )
     return Report(
-        by_type, leaked, gold_chars, failures, len(examples), entity_free, flagged, tuple(misses)
+        by_type,
+        leaked,
+        gold_chars,
+        failures,
+        len(examples),
+        entity_free,
+        flagged,
+        tuple(misses),
+        *links.scores(),
     )
+
+
+@dataclass(slots=True)
+class _LinkCounts:
+    """Accumulates pair counts over the examples of one evaluation."""
+
+    mentions: Counter[str] = field(default_factory=Counter)
+    placed: Counter[str] = field(default_factory=Counter)
+    same: Counter[str] = field(default_factory=Counter)
+    linked: Counter[str] = field(default_factory=Counter)
+    wrong: Counter[str] = field(default_factory=Counter)
+    with_ids: set[str] = field(default_factory=set)
+    merges: list[WrongMerge] = field(default_factory=list)
+
+    def add(
+        self, example: Example, gold: Sequence[GoldSpan], spans: Sequence[Span], mapping: Mapping
+    ) -> None:
+        """Count the pairs of one example's scored gold spans; the example is one batch."""
+        families = [_family(span, example.text, mapping) for span in spans]
+        placed: list[tuple[GoldSpan, _Family]] = []
+        for span in gold:
+            self.mentions[span.entity_type] += 1
+            if span.entity is not None:
+                self.with_ids.add(span.entity_type)
+            family = _gold_family(span, spans, families)
+            if family is not None:
+                self.placed[span.entity_type] += 1
+                placed.append((span, family))
+        for index, (first, first_family) in enumerate(placed):
+            for second, second_family in placed[index + 1 :]:
+                if first.entity_type != second.entity_type:
+                    continue
+                together = first_family == second_family
+                if first.entity is not None and first.entity == second.entity:
+                    self.same[first.entity_type] += 1
+                    self.linked[first.entity_type] += together
+                elif together:
+                    self.wrong[first.entity_type] += 1
+                    self.merges.append(
+                        WrongMerge(
+                            example.id,
+                            (first.start, first.end),
+                            (second.start, second.end),
+                            first.entity_type,
+                        )
+                    )
+
+    def scores(self) -> tuple[tuple[LinkScore, ...], tuple[WrongMerge, ...]]:
+        """The link scores of the types with an entity id, and their wrong merges."""
+        scores = tuple(
+            LinkScore(
+                name,
+                self.mentions[name],
+                self.placed[name],
+                self.same[name],
+                self.linked[name],
+                self.wrong[name],
+            )
+            for name in sorted(self.with_ids)
+        )
+        return scores, tuple(m for m in self.merges if m.entity_type in self.with_ids)
+
+
+def _family(span: Span, text: str, mapping: Mapping) -> _Family | None:
+    """The type and number of the placeholder `span` is replaced with, as `restore` reads it
+    back; None for a placeholder literal or a span without an entity."""
+    entity = (
+        None
+        if span.entity_type == LITERAL
+        else _entity_of(span, text[span.start : span.end], mapping)
+    )
+    if entity is None:
+        return None
+    entity_type, number, _ = parse_match(next(TOLERANT.finditer(entity.placeholder)))
+    return entity_type, number
+
+
+def _gold_family(
+    gold: GoldSpan, spans: Sequence[Span], families: Sequence[_Family | None]
+) -> _Family | None:
+    """The family of the predicted span covering most of `gold`; the earlier one on a tie."""
+    best, family = 0, None
+    for span, candidate in zip(spans, families, strict=True):
+        covered = min(gold.end, span.end) - max(gold.start, span.start)
+        if covered > best:
+            best, family = covered, candidate
+    return family
 
 
 def _covered(gold: GoldSpan, spans: Sequence[Span]) -> int:

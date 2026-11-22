@@ -62,6 +62,8 @@ def test_the_table_has_numbers_and_entity_types_but_no_text(
     assert "EMAIL" in out
     assert "PERSON" in out
     assert "missed" not in out
+    assert "linking" not in out
+    assert "wrong merges" not in out
 
 
 def test_the_json_report_has_every_number(
@@ -77,6 +79,7 @@ def test_the_json_report_has_every_number(
     assert report["round_trip_failures"] == 0
     assert report["missed_spans"] == 2
     assert report["misses"] == []
+    assert (report["linking"], report["wrong_merge_pairs"], report["wrong_merges"]) == ([], 0, [])
     assert report["by_type"] == [
         {
             "entity_type": "EMAIL",
@@ -235,6 +238,8 @@ def test_an_unexpected_error_exits_2_with_its_class_name_only(
         ["--max-leak-rate", "1.5"],
         ["--max-leak-rate", "nan"],
         ["--show-misses", "-1"],
+        ["--show-wrong-merges", "-1"],
+        ["--show-wrong-merges", "x"],
         ["--format", "csv"],
     ],
 )
@@ -262,3 +267,125 @@ def test_running_the_package_as_a_module_exits_with_the_code_of_main(
             runpy.run_module("aliasgate.eval", run_name="__main__")
     assert caught.value.code == 1
     assert "en: 3 examples" in capsys.readouterr().out
+
+
+# Entity ids and linking -----------------------------------------------------------------------
+
+ENTITY_IDS = ("who.owner-7", "who.buyer-8", "who.guest-9", "who.shop-1")
+# The dictionary finds "Hartwell" (PERSON) and "Quillon Ltd" (ORG). Three different people are
+# called Hartwell: three wrong pairs. The two ORG mentions are one entity: one linked pair.
+LINKED: dict[str, object] = {
+    "text": f"{MARKER}: Hartwell, Hartwell and Hartwell met Quillon Ltd and Quillon Ltd.",
+    "spans": [
+        {"start": 14, "end": 22, "type": "PERSON", "entity": ENTITY_IDS[0]},
+        {"start": 24, "end": 32, "type": "PERSON", "entity": ENTITY_IDS[1]},
+        {"start": 37, "end": 45, "type": "PERSON", "entity": ENTITY_IDS[2]},
+        {"start": 50, "end": 61, "type": "ORG", "entity": ENTITY_IDS[3]},
+        {"start": 66, "end": 77, "type": "ORG", "entity": ENTITY_IDS[3]},
+    ],
+}
+SURFACES = ("Hartwell", "Quillon")
+
+
+def _linked(tmp_path: Path) -> list[str]:
+    corpus = tmp_path / "linked.jsonl"
+    lines = [
+        json.dumps({"id": "en-4", "lang": "en", **LINKED}),
+        json.dumps({"id": "en-5", "lang": "en", **SECOND}),
+    ]
+    corpus.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    terms = tmp_path / "terms.yaml"
+    terms.write_text(
+        "terms:\n  - {term: Hartwell, type: PERSON}\n  - {term: Quillon Ltd, type: ORG}\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "aliasgate.yaml"
+    config.write_text("detection:\n  dictionary:\n    files: [terms.yaml]\n", encoding="utf-8")
+    return [str(corpus), "--config", str(config)]
+
+
+def _row(out: str, heading: str, entity_type: str) -> list[str]:
+    lines = out[out.index(heading) :].splitlines()
+    return next(line.split() for line in lines if line.startswith(entity_type))
+
+
+def test_the_linking_table_follows_the_type_table_for_a_corpus_with_entity_ids(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out, _ = _run(capsys, *_linked(tmp_path))
+    assert code == 0
+    heading = "linking (pairs of mentions within an example):"
+    assert heading in out
+    assert out.index("precision_exact") < out.index(heading)
+    assert out[out.index(heading) :].splitlines()[1].split() == [
+        "type",
+        "mentions",
+        "placed",
+        "same_pairs",
+        "linked",
+        "wrong",
+        "link_recall",
+        "link_precision",
+    ]
+    assert _row(out, heading, "ORG") == ["ORG", "2", "2", "1", "1", "0", "1.000", "1.000"]
+    # en-5 holds one PERSON span without an id; it is not placed and forms no pair.
+    assert _row(out, heading, "PERSON") == ["PERSON", "4", "3", "0", "0", "3", "1.000", "0.000"]
+    assert "wrong merges" not in out
+
+
+def test_show_wrong_merges_lists_ids_and_offsets_after_the_misses(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = _linked(tmp_path)
+    _, out, _ = _run(capsys, *argv, "--show-wrong-merges", "1", "--show-misses", "1")
+    assert "wrong merges (1 of 3):\n  en-4 14..22 and 24..32 PERSON" in out
+    assert "37..45" not in out
+    assert out.index("missed spans (1 of 1):") < out.index("wrong merges (1 of 3):")
+    _, out, _ = _run(capsys, *argv, "--show-wrong-merges", "5", "--format", "json")
+    report = json.loads(out)["en"]
+    assert report["wrong_merge_pairs"] == 3
+    assert report["wrong_merges"] == [
+        {"example_id": "en-4", "first": [14, 22], "second": [24, 32], "entity_type": "PERSON"},
+        {"example_id": "en-4", "first": [14, 22], "second": [37, 45], "entity_type": "PERSON"},
+        {"example_id": "en-4", "first": [24, 32], "second": [37, 45], "entity_type": "PERSON"},
+    ]
+    assert report["linking"] == [
+        {
+            "entity_type": "ORG",
+            "mentions": 2,
+            "placed": 2,
+            "same_pairs": 1,
+            "linked_pairs": 1,
+            "wrong_pairs": 0,
+            "link_recall": 1.0,
+            "link_precision": 1.0,
+        },
+        {
+            "entity_type": "PERSON",
+            "mentions": 4,
+            "placed": 3,
+            "same_pairs": 0,
+            "linked_pairs": 0,
+            "wrong_pairs": 3,
+            "link_recall": 1.0,
+            "link_precision": 0.0,
+        },
+    ]
+    _, out, _ = _run(capsys, *argv, "--format", "json")
+    assert (json.loads(out)["en"]["wrong_merge_pairs"], json.loads(out)["en"]["wrong_merges"]) == (
+        3,
+        [],
+    )
+
+
+@pytest.mark.parametrize("output", [["--format", "table"], ["--format", "json"]])
+def test_neither_format_contains_an_entity_id_or_any_gold_surface(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], output: list[str]
+) -> None:
+    argv = [*_linked(tmp_path), *output, "--show-misses", "9", "--show-wrong-merges", "9"]
+    code, out, err = _run(capsys, *argv)
+    assert code == 0
+    assert "en-4" in out
+    for text in (*ENTITY_IDS, "who.", *SURFACES, "Smith", MARKER):
+        assert text not in out
+        assert text not in err

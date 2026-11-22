@@ -7,6 +7,21 @@ change the configuration or the command line.
 
 ## [Unreleased]
 
+### Added
+
+- Link scores in the evaluation harness. Gold spans may name their entity with an optional
+  `entity` id. The harness then counts, per type, pairs of mentions of one entity that share a
+  placeholder number (`link_recall`) and pairs of mentions of two entities that share one
+  (wrong merges, in `link_precision`). The variant letter is ignored. The table gains a linking
+  table, JSON gains `linking`, `wrong_merge_pairs` and `wrong_merges`, and
+  `--show-wrong-merges N` lists wrong merges by example id and offsets. Entity ids are never
+  printed.
+- A synthetic person corpus (`tests/eval/corpus/persons.*.jsonl`, 280 examples per language in
+  14 categories) with full names and the shorter forms people use, its generator
+  `tools/generate_person_corpus.py`, and a dictionary of its full names for CI. Its baseline
+  shows that every shorter form of a detected full name (a first name, a surname, a title with
+  a surname) is forwarded unchanged today.
+
 ## [0.3.0] - 2026-11-21
 
 Rule coverage gaps. The rules find identifiers that 0.2.0 forwarded unchanged, and with `URL`

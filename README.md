@@ -100,7 +100,7 @@ regulation. Read the [threat model](https://github.com/jcjmenez/aliasgate/blob/m
 | 12 | CLI, Docker image, first release | done |
 | 13 | Dictionary aliases (entity linking, part 1) | done |
 | 14 | Rule coverage gaps | done |
-| 15 | Person mentions evaluation set (entity linking, part 2) | planned |
+| 15 | Person mentions evaluation set (entity linking, part 2) | done |
 | 16 | Person name tokens and linking (entity linking, part 3) | planned |
 
 ## Development

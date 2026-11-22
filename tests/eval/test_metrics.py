@@ -8,7 +8,15 @@ from hypothesis import strategies as st
 from aliasgate.config import Settings
 from aliasgate.engine import PseudonymizedBatch, Pseudonymizer
 from aliasgate.eval.corpus import Example, GoldSpan, load_corpus
-from aliasgate.eval.metrics import Miss, Report, TypeScore, evaluate, expected_restoration
+from aliasgate.eval.metrics import (
+    LinkScore,
+    Miss,
+    Report,
+    TypeScore,
+    WrongMerge,
+    evaluate,
+    expected_restoration,
+)
 from aliasgate.factory import build_pseudonymizer
 from aliasgate.types import PRIORITY_ML, Span
 from fakes import WordListDetector
@@ -32,7 +40,9 @@ class _ScriptedDetector:
         ]
 
 
-def _example(text: str, *spans: tuple[int, int, str], example_id: str = "x-1") -> Example:
+def _example(
+    text: str, *spans: tuple[int, int, str] | tuple[int, int, str, str], example_id: str = "x-1"
+) -> Example:
     return Example(example_id, "en", text, tuple(GoldSpan(*span) for span in spans))
 
 
@@ -237,3 +247,206 @@ def test_expected_restoration_agrees_with_the_slice_03_oracle_on_the_corpus(lang
         assert [expected_restoration(example.text, spans, batch.mapping)] == propagation_oracle(
             [example.text], batch
         ), example.id
+
+
+# Link scores ----------------------------------------------------------------------------------
+
+
+def _link(report: Report, entity_type: str = "PERSON") -> LinkScore:
+    (score,) = [score for score in report.linking if score.entity_type == entity_type]
+    return score
+
+
+def _counts(score: LinkScore) -> tuple[int, int, int, int, int]:
+    return (score.mentions, score.placed, score.same_pairs, score.linked_pairs, score.wrong_pairs)
+
+
+def test_a_corpus_without_entity_ids_has_no_link_scores_and_no_wrong_merges() -> None:
+    report = evaluate(
+        _engine({"Smith and Smith": [(0, 5, "PERSON"), (10, 15, "PERSON")]}),
+        [_example("Smith and Smith", (0, 5, "PERSON"), (10, 15, "PERSON"))],
+    )
+    assert (report.linking, report.wrong_merges) == ((), ())
+
+
+def test_mentions_whose_placeholders_differ_only_by_the_variant_letter_are_linked() -> None:
+    text = "Alice Johnson wrote. Ally will call."
+    words = {"Alice Johnson": "PERSON", "Ally": "PERSON"}
+    links = {"Alice Johnson": "fake:1", "Ally": "fake:1"}
+    engine = Pseudonymizer([WordListDetector(words, links=links)])
+    assert engine.pseudonymize([text]).texts == ("[PERSON_1] wrote. [PERSON_1_B] will call.",)
+    report = evaluate(engine, [_example(text, (0, 13, "PERSON", "p1"), (21, 25, "PERSON", "p1"))])
+    assert report.linking == (LinkScore("PERSON", 2, 2, 1, 1, 0),)
+    assert (report.linking[0].link_recall, report.linking[0].link_precision) == (1.0, 1.0)
+    assert report.wrong_merges == ()
+
+
+def test_mentions_of_one_entity_with_different_numbers_are_a_missed_link() -> None:
+    text = "Alice Johnson wrote. Ally will call."
+    engine = Pseudonymizer([WordListDetector({"Alice Johnson": "PERSON", "Ally": "PERSON"})])
+    assert engine.pseudonymize([text]).texts == ("[PERSON_1] wrote. [PERSON_2] will call.",)
+    report = evaluate(engine, [_example(text, (0, 13, "PERSON", "p1"), (21, 25, "PERSON", "p1"))])
+    assert _counts(_link(report)) == (2, 2, 1, 0, 0)
+    assert (_link(report).link_recall, _link(report).link_precision) == (0.0, 1.0)
+
+
+def test_two_entities_whose_mentions_have_one_key_are_a_wrong_merge() -> None:
+    text = "Smith called. Later Smith paid."
+    engine = Pseudonymizer([WordListDetector({"Smith": "PERSON"})])
+    report = evaluate(engine, [_example(text, (0, 5, "PERSON", "p1"), (20, 25, "PERSON", "p2"))])
+    assert _counts(_link(report)) == (2, 2, 0, 0, 1)
+    assert (_link(report).link_recall, _link(report).link_precision) == (1.0, 0.0)
+    assert report.wrong_merges == (WrongMerge("x-1", (0, 5), (20, 25), "PERSON"),)
+
+
+def test_a_span_without_an_entity_id_is_an_entity_of_its_own() -> None:
+    text = "Smith called. Later Smith paid."
+    engine = Pseudonymizer([WordListDetector({"Smith": "PERSON"})])
+    report = evaluate(engine, [_example(text, (0, 5, "PERSON", "p1"), (20, 25, "PERSON"))])
+    assert _counts(_link(report)) == (2, 2, 0, 0, 1)
+    assert report.wrong_merges == (WrongMerge("x-1", (0, 5), (20, 25), "PERSON"),)
+
+
+def test_two_spans_without_an_entity_id_are_two_entities() -> None:
+    text = "Alice met Smith. Later Smith paid."
+    engine = Pseudonymizer([WordListDetector({"Smith": "PERSON"})])
+    gold = _example(text, (0, 5, "PERSON", "p1"), (10, 15, "PERSON"), (23, 28, "PERSON"))
+    report = evaluate(engine, [gold])
+    assert _counts(_link(report)) == (3, 2, 0, 0, 1)
+    assert report.wrong_merges == (WrongMerge("x-1", (10, 15), (23, 28), "PERSON"),)
+
+
+def test_a_gold_span_that_no_predicted_span_touches_is_not_placed_and_forms_no_pair() -> None:
+    text = "Alice Johnson wrote. Alice will call."
+    engine = Pseudonymizer([WordListDetector({"Alice Johnson": "PERSON"})])
+    report = evaluate(engine, [_example(text, (0, 13, "PERSON", "p1"), (21, 26, "PERSON", "p1"))])
+    assert _counts(_link(report)) == (2, 1, 0, 0, 0)
+    assert report.leaked_chars == 5
+
+
+def test_a_gold_span_takes_the_family_of_the_predicted_span_that_covers_most_of_it() -> None:
+    text = "Alice Johnson wrote. Johnson paid."
+    gold = _example(text, (0, 13, "PERSON", "p1"), (21, 28, "PERSON", "p1"))
+    predicted = [(0, 5, "PERSON"), (6, 13, "PERSON"), (21, 28, "PERSON")]
+    report = evaluate(_engine({text: predicted}), [gold])
+    assert _counts(_link(report)) == (2, 2, 1, 1, 0)
+
+
+def test_on_a_tie_a_gold_span_takes_the_family_of_the_earlier_predicted_span() -> None:
+    first, last = "Ann Lee wrote. Ann paid.", "Ann Lee wrote. Lee paid."
+    predicted = {
+        first: [(0, 3, "PERSON"), (4, 7, "PERSON"), (15, 18, "PERSON")],
+        last: [(0, 3, "PERSON"), (4, 7, "PERSON"), (15, 18, "PERSON")],
+    }
+    examples = [
+        _example(first, (0, 7, "PERSON", "p1"), (15, 18, "PERSON", "p1"), example_id="first"),
+        _example(last, (0, 7, "PERSON", "p1"), (15, 18, "PERSON", "p1"), example_id="last"),
+    ]
+    assert _counts(_link(evaluate(_engine(predicted), examples[:1]))) == (2, 2, 1, 1, 0)
+    assert _counts(_link(evaluate(_engine(predicted), examples[1:]))) == (2, 2, 1, 0, 0)
+
+
+def test_a_gold_span_covered_by_a_propagated_span_takes_the_family_propagation_used() -> None:
+    # "İ" (dotted capital I) matches "i" case-insensitively, but its key differs from "ivan".
+    text = "Ivan wrote. İvan paid."
+    engine = Pseudonymizer([WordListDetector({"Ivan": "PERSON"})])
+    assert [span.source for span in engine.analyze([text])[0]] == ["fake", "propagation"]
+    report = evaluate(engine, [_example(text, (0, 4, "PERSON", "p1"), (12, 16, "PERSON", "p1"))])
+    assert _counts(_link(report)) == (2, 2, 1, 1, 0)
+
+
+def test_a_placeholder_literal_has_no_family() -> None:
+    text = "[PERSON_1] wrote. [PERSON_1] paid."
+    engine = Pseudonymizer([])
+    assert [span.entity_type for span in engine.analyze([text])[0]] == ["LITERAL", "LITERAL"]
+    report = evaluate(engine, [_example(text, (0, 10, "PERSON", "p1"), (18, 28, "PERSON", "p2"))])
+    assert _counts(_link(report)) == (2, 0, 0, 0, 0)
+
+
+def test_mentions_of_different_types_never_form_a_pair() -> None:
+    text = "ACME wrote. ACME paid."
+    engine = Pseudonymizer([WordListDetector({"ACME": "ORG"})])
+    report = evaluate(engine, [_example(text, (0, 4, "PERSON", "p1"), (12, 16, "ORG", "o1"))])
+    assert [_counts(score) for score in report.linking] == [(1, 1, 0, 0, 0), (1, 1, 0, 0, 0)]
+    assert [score.entity_type for score in report.linking] == ["ORG", "PERSON"]
+    assert report.wrong_merges == ()
+
+
+def test_pairs_never_cross_examples() -> None:
+    engine = Pseudonymizer([WordListDetector({"Smith": "PERSON"})])
+    examples = [
+        _example("Smith called.", (0, 5, "PERSON", "p1"), example_id="a"),
+        _example("Smith paid.", (0, 5, "PERSON", "p2"), example_id="b"),
+    ]
+    assert _counts(_link(evaluate(engine, examples))) == (2, 2, 0, 0, 0)
+
+
+def test_a_type_without_entity_ids_gets_no_link_score_and_one_with_ids_always_does() -> None:
+    text = "Alice wrote to ACME and ACME"
+    examples = [_example(text, (0, 5, "PERSON", "p1"), (15, 19, "ORG"), (24, 28, "ORG"))]
+    report = evaluate(Pseudonymizer([WordListDetector({"ACME": "ORG"})]), examples)
+    assert report.linking == (LinkScore("PERSON", 1, 0, 0, 0, 0),)
+    assert report.wrong_merges == ()
+
+
+def test_types_restrict_the_link_scores() -> None:
+    text = "ACME wrote. Alice paid."
+    example = _example(text, (0, 4, "ORG", "o1"), (12, 17, "PERSON", "p1"))
+    engine = Pseudonymizer([WordListDetector({"ACME": "ORG", "Alice": "PERSON"})])
+    assert [score.entity_type for score in evaluate(engine, [example]).linking] == [
+        "ORG",
+        "PERSON",
+    ]
+    assert evaluate(engine, [example], types={"ORG"}).linking == (LinkScore("ORG", 1, 1, 0, 0, 0),)
+
+
+def test_three_mentions_of_one_entity_in_one_family_are_three_linked_pairs() -> None:
+    text = "Alice wrote. Alice paid. Alice left."
+    gold = _example(
+        text, (0, 5, "PERSON", "p1"), (13, 18, "PERSON", "p1"), (25, 30, "PERSON", "p1")
+    )
+    report = evaluate(Pseudonymizer([WordListDetector({"Alice": "PERSON"})]), [gold])
+    assert _counts(_link(report)) == (3, 3, 3, 3, 0)
+
+
+def test_wrong_merges_are_ordered_by_example_then_first_then_second_span() -> None:
+    engine = Pseudonymizer([WordListDetector({"Smith": "PERSON"})])
+    examples = [
+        _example(
+            "Smith, Smith and Smith",
+            (0, 5, "PERSON", "a"),
+            (7, 12, "PERSON", "b"),
+            (17, 22, "PERSON", "c"),
+            example_id="z-first",
+        ),
+        _example("Smith or Smith", (0, 5, "PERSON", "a"), (9, 14, "PERSON", "b"), example_id="a-2"),
+    ]
+    report = evaluate(engine, examples)
+    assert report.wrong_merges == (
+        WrongMerge("z-first", (0, 5), (7, 12), "PERSON"),
+        WrongMerge("z-first", (0, 5), (17, 22), "PERSON"),
+        WrongMerge("z-first", (7, 12), (17, 22), "PERSON"),
+        WrongMerge("a-2", (0, 5), (9, 14), "PERSON"),
+    )
+    assert _link(report).wrong_pairs == 4
+
+
+@pytest.mark.parametrize(
+    ("score", "expected"),
+    [
+        (
+            LinkScore("X", mentions=0, placed=0, same_pairs=0, linked_pairs=0, wrong_pairs=0),
+            (1.0, 1.0),
+        ),
+        (
+            LinkScore("X", mentions=2, placed=2, same_pairs=0, linked_pairs=0, wrong_pairs=1),
+            (1.0, 0.0),
+        ),
+        (
+            LinkScore("X", mentions=5, placed=5, same_pairs=4, linked_pairs=1, wrong_pairs=3),
+            (0.25, 0.25),
+        ),
+    ],
+)
+def test_link_score_ratios(score: LinkScore, expected: tuple[float, float]) -> None:
+    assert (score.link_recall, score.link_precision) == expected

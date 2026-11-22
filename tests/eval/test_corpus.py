@@ -275,3 +275,103 @@ def test_malformed_lines_fail_with_their_position_and_without_text(
 def test_a_duplicate_id_fails_on_its_second_line(tmp_path: Path) -> None:
     with pytest.raises(CorpusError, match=r"line 2, example 'case-7': duplicate id"):
         load_corpus(_write(tmp_path, _line(), _line()))
+
+
+def test_the_committed_corpora_load_into_the_same_spans_without_entity_ids(
+    corpus: tuple[str, list[Example]],
+) -> None:
+    lang, examples = corpus
+    lines = (CORPUS / f"synthetic.{lang}.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [example.spans for example in examples] == [
+        tuple(
+            GoldSpan(span["start"], span["end"], span["type"]) for span in json.loads(line)["spans"]
+        )
+        for line in lines
+    ]
+    assert all(span.entity is None for example in examples for span in example.spans)
+
+
+# Entity ids -----------------------------------------------------------------------------------
+
+
+def test_a_span_with_an_entity_id_loads_it_and_a_span_without_one_has_none(
+    tmp_path: Path,
+) -> None:
+    spans = [
+        {"start": 7, "end": 12, "type": "PERSON", "entity": "p1"},
+        {"start": 13, "end": 20, "type": "PERSON"},
+    ]
+    (example,) = load_corpus(_write(tmp_path, _line(spans=spans)))
+    assert example.spans == (GoldSpan(7, 12, "PERSON", "p1"), GoldSpan(13, 20, "PERSON"))
+    assert example.spans[1].entity is None
+
+
+@pytest.mark.parametrize("entity", ["x" * 64, "p1", "A.b-c_9", "0"])
+def test_entity_ids_of_1_to_64_ascii_letters_digits_and_separators_are_accepted(
+    tmp_path: Path, entity: str
+) -> None:
+    spans = [{"start": 7, "end": 20, "type": "PERSON", "entity": entity}]
+    (example,) = load_corpus(_write(tmp_path, _line(spans=spans)))
+    assert example.spans[0].entity == entity
+
+
+@pytest.mark.parametrize(
+    "entity", ["", "x" * 65, "Alice Johnson", "Lucía", "p1\n", 12345, None, True, ["p1"]]
+)
+def test_an_invalid_entity_id_is_rejected_without_repeating_it(
+    tmp_path: Path, entity: object
+) -> None:
+    spans = [
+        {"start": 7, "end": 12, "type": "PERSON"},
+        {"start": 13, "end": 20, "type": "PERSON", "entity": entity},
+    ]
+    with pytest.raises(CorpusError) as caught:
+        load_corpus(_write(tmp_path, _line(spans=spans)))
+    message = str(caught.value)
+    assert "line 1, example 'case-7': span 2 has an invalid entity id" in message
+    if entity:
+        assert str(entity).strip() not in message
+        assert json.dumps(entity) not in message
+
+
+def test_spans_sharing_an_entity_id_with_another_type_are_rejected_by_number(
+    tmp_path: Path,
+) -> None:
+    spans = [
+        {"start": 0, "end": 6, "type": "ORG", "entity": "who.alice"},
+        {"start": 7, "end": 12, "type": "PERSON", "entity": "who.bob"},
+        {"start": 13, "end": 20, "type": "PERSON", "entity": "who.alice"},
+    ]
+    with pytest.raises(CorpusError) as caught:
+        load_corpus(_write(tmp_path, _line(spans=spans)))
+    message = str(caught.value)
+    assert "span 3 has the entity id of span 1 with another type" in message
+    assert "who." not in message
+
+
+def test_spans_sharing_an_entity_id_and_its_type_are_one_entity(tmp_path: Path) -> None:
+    spans = [
+        {"start": 0, "end": 6, "type": "PERSON", "entity": "e"},
+        {"start": 7, "end": 12, "type": "ORG", "entity": "f"},
+        {"start": 13, "end": 20, "type": "PERSON", "entity": "e"},
+    ]
+    (example,) = load_corpus(_write(tmp_path, _line(spans=spans)))
+    assert [span.entity for span in example.spans] == ["e", "f", "e"]
+
+
+@pytest.mark.parametrize(
+    "span",
+    [
+        {"start": 7, "end": 20, "type": "PERSON", "id": "p1"},
+        {"start": 7, "end": 20, "type": "PERSON", "entity": "p1", "extra": 1},
+        {"start": 7, "end": 20, "entity": "p1"},
+    ],
+)
+def test_an_unknown_or_missing_span_key_is_rejected_with_the_optional_key_named(
+    tmp_path: Path, span: dict[str, object]
+) -> None:
+    with pytest.raises(CorpusError) as caught:
+        load_corpus(_write(tmp_path, _line(spans=[span])))
+    assert "span 1 must be an object with start, end and type, and optionally entity" in str(
+        caught.value
+    )
