@@ -20,6 +20,14 @@ engine, not in a detector, because it needs the persons of the whole batch. It n
 evaluation set for wrong merges, which are worse than missed merges. Specify it once slice 13 is
 merged and measured, including whether models keep the variant letters.
 
+**Cut into [slice 15](slice-15-person-evaluation.md) and [slice 16](slice-16-person-tokens.md).**
+Slice 13's manual check showed that models keep the variant letters. A prototype then found a
+leak: with the full name detected, the shorter forms of a name (`Ms. Johnson`, `Alice`,
+`Sr. Pérez`) are forwarded unchanged, because no detector finds them and propagation looks only
+for whole surfaces. Slice 15 adds a person corpus with gold entity ids and link scores. Slice 16
+replaces and links the shorter forms where they are capitalised. A form is one name word in any
+position, or a contiguous run of words. Nicknames, lower-case forms and other types stay here.
+
 ## 2. Realistic surrogates, opt-in per entity type
 
 **Problem.** Placeholders reduce answer quality on some tasks (state of the art §5).
