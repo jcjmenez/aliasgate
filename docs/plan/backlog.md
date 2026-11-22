@@ -34,6 +34,15 @@ position, or a contiguous run of words. Nicknames, lower-case forms and other ty
 English first name `Don` (read as a title), and linking the words of other types, such as
 `ORG`.
 
+**Cut into [slice 17](slice-17-person-forms.md).** Lower-case shorter forms are replaced unless
+the word is on a fixed list of English and Spanish common words, which keep the capitalised
+rule. A detected name with one name word and a title or an initial counts as a person, each part
+of a hyphenated name word is a shorter form of its own, and `Don` is a first name when the rest
+of the name has one name word. A prototype measured the leak rate of the person corpus falling
+from 0.0425 to 0.0303 in English and from 0.0339 to 0.0225 in Spanish, with the synthetic corpora
+unchanged. Still open after it: nicknames, diminutives, transliterations, common words that are
+also names written in lower case, and linking the words of other types.
+
 ## 2. Realistic surrogates, opt-in per entity type
 
 **Problem.** Placeholders reduce answer quality on some tasks (state of the art §5).

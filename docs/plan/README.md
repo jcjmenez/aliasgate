@@ -28,6 +28,7 @@ Read [AGENTS.md](../../AGENTS.md) first. Its rules apply to every slice.
 | 14 | [slice-14-rule-gaps.md](slice-14-rule-gaps.md) | Rule coverage gaps | 13 | done |
 | 15 | [slice-15-person-evaluation.md](slice-15-person-evaluation.md) | Person mentions evaluation set, link scores | 14 | done |
 | 16 | [slice-16-person-tokens.md](slice-16-person-tokens.md) | Person name tokens and linking | 15 | done |
+| 17 | [slice-17-person-forms.md](slice-17-person-forms.md) | Lower-case, one-word, hyphenated and `Don` person forms | 16 | planned |
 
 Slices 02 and 03 can be done in either order. Slices 09 and 11 can be done any time after 04.
 The first usable end-to-end product exists after slice 06; the first one worth deploying, after
