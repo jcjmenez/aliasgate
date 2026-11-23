@@ -405,18 +405,28 @@ request is replaced as a variant of that person: `Johnson`, `Ms. Johnson`, `Alic
 A run of the name's words (`Juan Pérez`) that a detector found also becomes a variant instead
 of getting a number of its own.
 
-- It needs a detected full name: a name with at least two words that are not a title
-  (`Ms.`, `Sr.`, `Dña.`), a particle (`de`, `del`, `van`) or an initial (`J.`), and that are at
-  least `min_propagation_length` characters long. A detected `Dr. Smith` or `J. R. Smith` has
-  only one such word, so `Smith` alone is not replaced.
-- A word is replaced only where it starts with an upper-case letter, so `la mesa` stays as
-  written next to `Pedro Mesa`, and so does `it will` next to `Will Stone`.
+- It needs a detected name of a person: at least two words that are not a title (`Ms.`,
+  `Sr.`, `Dña.`), a particle (`de`, `del`, `van`, `and`) or an initial (`J.`), or one such word
+  with a title or an initial (`Dr. Smith`, `J. R. Smith`, `Sr. Pérez`), or one hyphenated word
+  (`Anne-Marie`). The words must be at least `min_propagation_length` characters long. A
+  particle is not enough: a detected `El cliente` is not a person.
+- Each part of a hyphenated name is a shorter form too: `Anne`, `Marie` and `Fowler` after
+  `Anne-Marie Fowler`, `Lorca` after `Federico García-Lorca`.
+- `Don` is the English first name when the rest of the name has exactly one word (`Don Draper`),
+  and the Spanish title otherwise (`Don Juan Pérez`). `Don't` is never replaced for it.
+- Lower-case shorter forms are replaced too (`thanks larry` after `Larry Thompson`), unless the
+  word is a common English or Spanish word on a fixed list of 633 words, which holds
+  closed-class words (`and`, `para`, `con`) and common words that are also names (`brown`,
+  `mesa`, `rubio`, `rosa`). A word on the list is replaced only where it starts with an
+  upper-case letter, so `la mesa` stays as written next to `Pedro Mesa`, and so does `it will`
+  next to `Will Stone`. A name that a detector returns in lower case gives no lower-case
+  replacement.
 - A word that two persons of the request share (`Smith` for `Bob Smith` and `Alice Smith`) gets
   a number of its own instead of either person's.
 - Words nobody detected are replaced by the propagation step, so with `propagate: false` only
   the shorter forms a detector found are linked, and the others stay in the outbound body.
-- The English first name `Don` is read as the title. Words on the allow list are never
-  replaced.
+- Words on the allow list are never replaced. They do not decide whether a detected name is a
+  person: with `jordan` allowed, `Michael` after `Michael Jordan` is still replaced.
 
 Set `detection.person_tokens: false` (or `ALIASGATE_DETECTION__PERSON_TOKENS=false`) to turn it
 off: shorter forms are then replaced only where a detector finds them, with a number of their
@@ -444,7 +454,10 @@ own.
   restored as written. Some effects to expect:
   - a capitalised word that equals a word of a detected name is replaced too, for example at
     the start of a sentence (`Will you check it?` next to `Will Stone`);
-  - lower-case shorter forms (`thanks alice`) are not replaced;
+  - lower-case shorter forms are replaced unless the word is a common word, and a common word
+    that is also a name (`rubio`, `brown`) is left as written in lower case; a lower-case
+    form seen first restores in lower case (`thanks larry … Larry said` comes back as
+    `larry said`);
   - in a later message, a different person who shares a word with an earlier one (another
     `Alice`) gets the earlier person's variant, because earlier placeholders never change;
   - an organisation named after a person (`Vidal Logistics` next to `Lucía Vidal`) may show
@@ -520,8 +533,10 @@ Before forwarding, the **leak audit** searches every string value of the outboun
 the fields the gateway pseudonymised, for every detected value of at least
 `min_propagation_length` characters: as a whole term ignoring case, and after Unicode NFKC
 normalisation and case folding. A word of a person's name that nobody detected (section 6.3)
-is searched only where it starts with an upper-case letter, as it is replaced, so `la mesa` next
-to `Pedro Mesa` is not reported. If one is found, the request is rejected with
+and that is a common word is searched only where it starts with an upper-case letter, as it is
+replaced, so `la mesa` next to `Pedro Mesa` is not reported. Any other word of a person's name
+is searched in every case. A term is never found in front of `'t` that ends a word, so `Don't`
+is not reported for `Don`. If one is found, the request is rejected with
 `leak_audit_failed` and nothing is sent. It is on by default (`policy.leak_audit`).
 
 After restoring, placeholders in the answer that are not in the request's mapping are left as

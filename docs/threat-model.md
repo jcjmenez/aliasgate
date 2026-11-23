@@ -27,11 +27,11 @@ These are known and not fully solved. A deployment must accept or mitigate each 
    Mitigations: the company dictionary for known terms, a recall-oriented ML threshold,
    propagation, person name linking, and measuring recall on your own data with the
    [evaluation harness](evaluation.md). Person name linking replaces the shorter forms of a
-   detected full name only where they start with an upper-case letter, so these are still
-   sent as written: lower-case shorter forms (`thanks alice`), words shorter than
-   `min_propagation_length`, the English first name `Don` (read as a title), the words of a
-   detected name that has only one name token (`Dr. Smith`), and decomposed or full-width forms
-   of a capitalised word, which the leak audit does not catch either.
+   detected name, in lower case too unless the word is a common word, so these are still sent
+   as written: a common word that is also a name, written in lower case (`gracias rubio`);
+   words shorter than `min_propagation_length`; nicknames and diminutives (`Bob` for
+   `Robert`); decomposed or full-width forms of a common word, which the leak audit does not
+   catch either; and the words of a detected name that is written in lower case.
 2. **Identification by context.** Job titles, rare events, small-town references or combinations
    of facts can identify a person without any detectable entity. No mitigation in the gateway.
 3. **Content the gateway cannot read.** Images, audio and file attachments are rejected by
@@ -49,7 +49,10 @@ These are known and not fully solved. A deployment must accept or mitigate each 
    arithmetic on a masked number, facts about a real company) degrade or fail. Amounts and dates
    are not pseudonymised by default for this reason. A wrong link misleads the model about who
    did what: a second person named by a word of an earlier one's name (another `Alice`) gets the
-   earlier person's variant. That is a utility loss, not a leak.
+   earlier person's variant. One-word names, name parts and `Don` add such links: `Mr. Smith`
+   after `Dr. Smith`, the `Marie` of another person after `Anne-Marie`, and `Don` before
+   another name after the Spanish `Don Juan`, which reads as a first name and a surname. That
+   is a utility loss, not a leak.
 7. **Linkability within a request.** The provider can see that `[PERSON_1]` is the same person
    throughout a conversation, and that the placeholders of a dictionary term and its aliases
    are names of one entity (`[ORG_1_B]` is another name of `[ORG_1]`). It also sees which

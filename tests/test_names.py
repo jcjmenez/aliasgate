@@ -1,6 +1,6 @@
 import pytest
 
-from aliasgate.names import PARTICLES, TITLES, name_tokens
+from aliasgate.names import PARTICLES, TITLES, is_person, name_parts, name_tokens, name_words
 
 
 @pytest.mark.parametrize(
@@ -75,3 +75,119 @@ def test_keys_are_nfkc_and_casefolded() -> None:
 def test_an_empty_or_blank_surface_has_no_tokens() -> None:
     assert name_tokens("", min_length=3) == ()
     assert name_tokens(" \t\n", min_length=3) == ()
+
+
+# Slice 17: `and`, the English first name `Don`, name parts and persons.
+
+
+def test_and_is_a_particle() -> None:
+    assert name_tokens("Rhodes, Young and Charles", min_length=3) == ("rhodes", "young", "charles")
+    assert "and" in PARTICLES
+
+
+@pytest.mark.parametrize(
+    ("surface", "expected"),
+    [
+        ("Don Draper", ("don", "draper")),
+        ("DON DRAPER", ("don", "draper")),
+        ("Mr. Don Draper", ("don", "draper")),
+        ("Don J. Smith", ("don", "smith")),
+        ("Don Juan Pérez", ("juan", "pérez")),
+        ("don Pedro", ("pedro",)),
+        ("Don.", ()),
+        ("Don", ()),
+        ("Don Juan", ("don", "juan")),
+        ("don Juan", ("juan",)),
+        ("Don. Draper", ("draper",)),
+    ],
+)
+def test_don_is_a_first_name_only_capitalised_undotted_and_before_one_other_name_token(
+    surface: str, expected: tuple[str, ...]
+) -> None:
+    assert name_tokens(surface, min_length=3) == expected
+
+
+def test_don_keeps_its_written_form_and_respects_the_minimum_length() -> None:
+    assert name_words("Don Draper", min_length=3) == (("don", "Don"), ("draper", "Draper"))
+    assert name_tokens("Don Draper", min_length=4) == ("draper",)
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        ("María-José", (("maría", "María"), ("josé", "José"))),
+        ("Smith-Li", (("smith", "Smith"),)),
+        ("Jean-de", (("jean", "Jean"),)),
+        ("Prof-Ann", (("ann", "Ann"),)),
+        ("Dr.-Ann", (("ann", "Ann"),)),
+        ("Fowler", ()),
+        ("Anne--Marie", (("anne", "Anne"), ("marie", "Marie"))),
+        ("Ana-del-Río", (("ana", "Ana"), ("río", "Río"))),
+        ("Smith-and-Jones", (("smith", "Smith"), ("jones", "Jones"))),
+    ],
+)
+def test_name_parts_are_the_long_enough_parts_that_are_not_titles_or_particles(
+    word: str, expected: tuple[tuple[str, str], ...]
+) -> None:
+    assert name_parts(word, min_length=3) == expected
+
+
+@pytest.mark.parametrize("hyphen", ["-", "\u2010", "\u2011"])
+def test_name_parts_split_on_each_of_the_three_hyphens(hyphen: str) -> None:
+    assert name_parts(f"Anne{hyphen}Marie", min_length=3) == (
+        ("anne", "Anne"),
+        ("marie", "Marie"),
+    )
+
+
+def test_name_parts_keys_are_normalised_and_the_minimum_length_applies() -> None:
+    assert name_parts("ANNE-STRAßE", min_length=3) == (("anne", "ANNE"), ("strasse", "STRAßE"))
+    assert name_parts("Li-Wei", min_length=3) == (("wei", "Wei"),)
+    assert name_parts("Li-Wei", min_length=2) == (("li", "Li"), ("wei", "Wei"))
+
+
+@pytest.mark.parametrize(
+    "surface",
+    [
+        "Dr. Smith",
+        "Mr Smith",
+        "J. Smith",
+        "J Smith",
+        "Sr. Pérez",
+        "Anne-Marie",
+        "Alice Johnson",
+        "Don Draper",
+        "J. R. Holloway",
+    ],
+)
+def test_a_name_with_two_tokens_a_title_an_initial_or_two_parts_is_a_person(surface: str) -> None:
+    assert is_person(surface, min_length=3)
+
+
+@pytest.mark.parametrize(
+    "surface",
+    [
+        "El cliente",
+        "de la Rosa",
+        "Smith",
+        "Smith-Li",
+        "Don",
+        "Don.",
+        "Dr.",
+        "",
+        "Mr. Don",
+        "Li Wei",
+    ],
+)
+def test_a_name_with_one_token_and_neither_title_initial_nor_two_parts_is_not_a_person(
+    surface: str,
+) -> None:
+    assert not is_person(surface, min_length=3)
+
+
+def test_a_don_that_is_a_first_name_is_not_also_a_title() -> None:
+    # "Don" is a name token here, so the surface has two of them and no title.
+    assert is_person("Don Draper", min_length=3)
+    # With a minimum of four, "Don" is too short to be a name token, so it counts as a title.
+    assert is_person("Don Draper", min_length=4)
+    assert is_person("Don Juan Pérez", min_length=3)

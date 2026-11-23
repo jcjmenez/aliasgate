@@ -1,6 +1,12 @@
 """Whole-term search patterns, shared by propagation, the dictionary and the leak audit."""
 
 import re
+from typing import Final
+
+# A whole term is not preceded by a word character, and not followed by one, nor by an
+# apostrophe and a "t" that ends the word, so that "Don" never matches in "Don't" (slice 17).
+TERM_START: Final[str] = r"(?<!\w)"
+TERM_END: Final[str] = "(?!\\w|['\u2019]t(?!\\w))"
 
 
 def term_body(surface: str) -> str:
@@ -14,8 +20,9 @@ def term_body(surface: str) -> str:
 
 def build_term_pattern(surface: str) -> re.Pattern[str]:
     """Pattern matching `surface` as a whole term, case-insensitively, with any whitespace run
-    between its tokens (architecture §4.3 step 3)."""
-    return re.compile(rf"(?<!\w)(?:{term_body(surface)})(?!\w)", re.IGNORECASE)
+    between its tokens, and never directly before an apostrophe (`'` or U+2019) and a `t` that
+    ends a word (architecture §4.3 step 3)."""
+    return re.compile(f"{TERM_START}(?:{term_body(surface)}){TERM_END}", re.IGNORECASE)
 
 
 def starts_upper(text: str) -> bool:

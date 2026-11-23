@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Final
 
 from aliasgate.mapping import normalize_key
+from aliasgate.terms import TERM_END, TERM_START
 from aliasgate.types import PRIORITY_DICTIONARY, Span, validate_entity_type
 
 _SOURCE = "dictionary"
@@ -108,7 +109,7 @@ class DictionaryDetector:
             self._by_shape.setdefault(_shape(surface.text), []).append(surface)
         self._pattern = (
             re.compile(
-                rf"(?<!\w)(?:{'|'.join(_body(surface.text) for surface in ordered)})(?!\w)",
+                f"{TERM_START}(?:{'|'.join(_body(surface.text) for surface in ordered)}){TERM_END}",
                 re.IGNORECASE,
             )
             if ordered

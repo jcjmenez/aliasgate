@@ -116,14 +116,20 @@ detection should include before and after numbers from this command (see
 configuration otherwise, so person name linking is on. It groups the examples by category and
 requires, for each language:
 
-- in `full`, `first`, `last`, `title`, `before`, `run`, `possessive`, `word`, `shared-last` and
-  `shared-first`: every letter and digit of every `PERSON` mention covered by a predicted span
-  (the space between two words of a run replaced one by one does not count), and no wrong pair;
-- in the first eight of those: `link_recall` of 1.0;
-- in `word`: no predicted span outside the gold spans, so the lower-case common word stays;
+- in `full`, `first`, `last`, `title`, `before`, `run`, `possessive`, `word`, `shared-last`,
+  `shared-first`, `single`, `hyphen` and `don`: every letter and digit of every `PERSON` mention
+  covered by a predicted span (the space between two words of a run replaced one by one does
+  not count), and no wrong pair;
+- in all of those but `shared-last` and `shared-first`: `link_recall` of 1.0;
+- in `word` and `don`: no predicted span outside the gold spans, so the lower-case common word,
+  `Don't` and the Spanish title stay;
+- in `lower`: every letter and digit of every `PERSON` mention covered, except the mentions
+  whose name words are all common words (the test names them: `amber`, `crystal`, `moreno` and
+  `ramos` in English, `mar` in Spanish), and no wrong pair;
 - no round-trip failure in the whole corpus.
 
-`other`, `sentence`, `lower` and `org` are measured below, not gated.
+`other`, `sentence` and `org` are measured below, not gated, and neither is the linking of
+`lower`.
 
 ## Your own corpus
 
@@ -196,12 +202,13 @@ uv run python tools/generate_corpus.py --check
 
 `tests/eval/corpus/persons.en.jsonl` and `persons.es.jsonl` measure the shorter forms of
 person names: a first name, a surname, a title with a surname, part of a Spanish name with two
-surnames. Each holds 280 examples, 20 in each of 14 categories, written by
-`tools/generate_person_corpus.py` from two hand-written templates per category and language
-(tickets, emails, CRM notes, chat messages). Example ids are `{lang}-{category}-{nnn}`. Every
-mention of a person is a `PERSON` span with the person's id (`p1`, `p2`, in order of first
-mention). Titles, a possessive `'s` and punctuation stay outside the span, and a name used as
-a common word (`the brown box`, `la mesa`) is not a span.
+surnames, one part of a hyphenated name. Each holds 340 examples, 20 in each of 17 categories,
+written by `tools/generate_person_corpus.py` from two hand-written templates per category and
+language (tickets, emails, CRM notes, chat messages). Example ids are `{lang}-{category}-{nnn}`.
+Every mention of a person is a `PERSON` span with the person's id (`p1`, `p2`, in order of
+first mention). Titles (the Spanish `don` and `doña` included), a possessive `'s` and
+punctuation stay outside the span, an initial belongs to it (`J. Holloway`), and a name used as
+a common word (`the brown box`, `la mesa`, `Don't`) is not a span.
 
 | Category | What its examples contain |
 |---|---|
@@ -217,10 +224,15 @@ a common word (`the brown box`, `la mesa`) is not a span.
 | `sentence` | A first name that is also a common word (`Will`, `Rosa`), alone as the name and at the start of a sentence as the word. |
 | `lower` | A full name, later a shorter form in lower case, as in a quick chat. |
 | `org` | A person, and an organisation named after the surname (an `ORG` span with id `o1`). |
+| `single` | A person named by a title and the surname, or by an initial and the surname, never by a full name; later the surname alone (`Dr. Holloway … Holloway`, `J. Romero … Romero`). |
+| `hyphen` | A person with a hyphenated first name, later its first part alone; or with a hyphenated surname (in Spanish the first surname), later its second part alone (`Anne-Marie Fowler … Anne`, `Federico García-Lorca Soto … Lorca`). |
+| `don` | In English, a person whose first name is `Don`, later `Don` or the surname alone, and once `Don't` as a common word. In Spanish, `don` or `doña` as a title before a full name, later the first name or a title with the surname. |
 
 The rules do not look for names, and the ML model does not run in CI. So the generator also
-writes `tests/eval/corpus/persons.terms.yaml`, a dictionary with every full name of both
-files, and `tests/eval/corpus/persons.yaml` is a configuration that loads it. With it, CI
+writes `tests/eval/corpus/persons.terms.yaml`, a dictionary with the first full-name mention of
+every person of both files (in `single`, which has no full name, the title or initial with the
+surname, such as `Dr. Holloway` or `Dra. Romero`), and `tests/eval/corpus/persons.yaml` is a
+configuration that loads it. With it, CI
 measures the case that matters here: the full name is detected, and the question is what
 happens to its shorter forms.
 
@@ -234,8 +246,17 @@ person so that titles and articles agree with the name. A name is drawn again wh
 words is shorter than three characters, is not made of letters, or is a title or a particle;
 when the persons of an example share a word their category does not ask for; when a name word
 also occurs outside the gold spans of its example (except the common word of `word` and
-`sentence`); and when a shorter form of several words anywhere in the corpus contains a full
-name of the dictionary, which would then detect it.
+`sentence`, and the `Don` of `Don't`); and when a shorter form of several words anywhere in the
+corpus contains a full name of the dictionary, which would then detect it. A hyphenated word
+joins two drawn words of one kind, and its parts count as name words too.
+
+The categories `single`, `hyphen` and `don` were added later (slice 17). The generator draws
+them after the other categories of both languages, so the first 280 lines of each file and the
+first 719 entries of the dictionary are those of the earlier corpus, as a test checks with their
+SHA-256. For these categories it also draws again when a dictionary term would match anywhere
+it does not name its person: an earlier term in the new text (even inside a hyphenated word,
+such as `Marie Fowler` in `Anne-Marie Fowler`), or a new term in an earlier text. So the
+dictionary finds in the earlier examples exactly what it found before.
 
 The files are committed. To regenerate them, or to check that the committed files match the
 generator (only with the Faker version in `uv.lock`, which was 40.54.0 when they were
@@ -452,3 +473,95 @@ three-word name whole, it finds two of its words as one person and a shorter for
 (`Adam Wise` for `Adam Joshua Wise`) as a second person, and the two get different numbers.
 In Spanish, where the model misses part of a full name, 9 characters of `first` and 11 of
 `before` leak, and `run` leaks 32 characters instead of 42.
+
+### Person corpus with the remaining forms
+
+Measured on 2026-11-23 with the same commands and the corpus of 340 examples per language
+(slice 17): lower-case shorter forms are replaced unless the word is a common word, a name with
+one name word and a title or an initial is a person, each part of a hyphenated name is a
+shorter form, and `Don` is a first name before exactly one other name word. The numbers of the
+two sections above were measured on the first 280 examples, which have not changed.
+
+**Baseline of the new categories**, measured with the slice 16 engine after the categories were
+added and before the engine changed (`placed` of `mentions`, `PERSON` characters leaked of
+gold, and pairs as `same_pairs` / `linked` / `wrong`):
+
+| Run | Category | en: placed | en: `PERSON` leaked | en: same / linked / wrong | es: placed | es: `PERSON` leaked | es: same / linked / wrong |
+|---|---|---|---|---|---|---|---|
+| dictionary | `single` | 20 of 40 | 123 of 276 | 0 / 0 / 0 | 20 of 40 | 129 of 288 | 0 / 0 / 0 |
+| dictionary | `hyphen` | 20 of 40 | 113 of 511 | 0 / 0 / 0 | 20 of 40 | 126 of 673 | 0 / 0 / 0 |
+| dictionary | `don` | 20 of 40 | 89 of 290 | 0 / 0 / 0 | 40 of 40 | 0 of 578 | 20 / 20 / 0 |
+| ML | `single` | 22 of 40 | 108 of 276 | 2 / 0 / 0 | 28 of 40 | 77 of 288 | 8 / 0 / 0 |
+| ML | `hyphen` | 20 of 40 | 113 of 511 | 0 / 0 / 0 | 20 of 40 | 134 of 673 | 0 / 0 / 0 |
+| ML | `don` | 20 of 40 | 89 of 290 | 0 / 0 / 0 | 40 of 40 | 0 of 578 | 20 / 20 / 0 |
+
+Every surname after a title or an initial, every part of a hyphenated name and every English
+`Don` and surname after `Don …` leaked, and what the model found of them got a number of its
+own. The Spanish `don` category was already covered: the title is not part of the name, and the
+first name and the title with the surname are shorter forms of a full name.
+
+**With the dictionary** (what CI runs). The leak rate of the whole corpus fell from 0.0737 to
+0.0266 in English (238 of 8,942 characters) and from 0.0503 to 0.0197 in Spanish (244 of
+12,387). On the first 280 examples, it fell from 0.0425 to 0.0303 in English and from 0.0339
+to 0.0225 in Spanish. `PERSON` accounts for 63 of the leaked characters in English and 49 in
+Spanish: as before, the spaces between the words of a run or of a compound first name, which
+are replaced one word at a time, and the lower-case common words of `lower`. The
+rest are the organisation names of `org`. There was no round-trip failure.
+
+| Type | en: gold | en: predicted | en: `recall_overlap` | en: `recall_exact` | en: `precision_exact` | es: gold | es: predicted | es: `recall_overlap` | es: `recall_exact` | es: `precision_exact` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `PERSON` (slice 16) | 890 | 890 | 0.910 | 0.854 | 0.854 | 890 | 915 | 0.933 | 0.873 | 0.849 |
+| `PERSON` | 890 | 966 | 0.996 | 0.939 | 0.865 | 890 | 975 | 0.999 | 0.938 | 0.856 |
+| `ORG` | 20 | 0 | 1.000 | 0.000 | – | 20 | 0 | 1.000 | 0.000 | – |
+
+| Type | Language | `mentions` | `placed` | `same_pairs` | `linked` | `wrong` | `link_recall` | `link_precision` |
+|---|---|---|---|---|---|---|---|---|
+| `PERSON` (slice 16) | en | 890 | 810 | 430 | 350 | 30 | 0.814 | 0.921 |
+| `PERSON` | en | 890 | 886 | 506 | 426 | 30 | 0.842 | 0.934 |
+| `PERSON` (slice 16) | es | 890 | 830 | 450 | 370 | 30 | 0.822 | 0.925 |
+| `PERSON` | es | 890 | 889 | 509 | 429 | 30 | 0.843 | 0.935 |
+| `ORG` | en | 20 | 20 | 0 | 0 | 0 | 1.000 | 1.000 |
+| `ORG` | es | 20 | 20 | 0 | 0 | 0 | 1.000 | 1.000 |
+
+By category, of the 14 earlier categories only `lower` changed; the others give exactly the
+numbers of the slice 16 table above. The categories that changed:
+
+| Category | en: placed | en: `PERSON` leaked | en: same / linked / wrong | es: placed | es: `PERSON` leaked | es: same / linked / wrong |
+|---|---|---|---|---|---|---|
+| `lower` (slice 16) | 20 of 40 | 119 of 382 | 0 / 0 / 0 | 20 of 40 | 128 of 557 | 0 / 0 / 0 |
+| `lower` | 36 of 40 | 23 of 382 | 16 / 16 / 0 | 39 of 40 | 4 of 557 | 19 / 19 / 0 |
+| `single` | 40 of 40 | 0 of 276 | 20 / 20 / 0 | 40 of 40 | 0 of 288 | 20 / 20 / 0 |
+| `hyphen` | 40 of 40 | 0 of 511 | 20 / 20 / 0 | 40 of 40 | 0 of 673 | 20 / 20 / 0 |
+| `don` | 40 of 40 | 0 of 290 | 20 / 20 / 0 | 40 of 40 | 0 of 578 | 20 / 20 / 0 |
+
+What still leaks in `lower` are the shorter forms that are common words (`amber`, `crystal`,
+`moreno`, `ramos`, and `mar` in Spanish), and the space inside `juan luis`. In `don`, neither
+`Don't` nor a Spanish title is replaced.
+
+**With the ML layer, without the dictionary** (`--types PERSON,ORG`, same model and settings
+as above). Both files took 41 seconds, model loading included. The leak rate of the whole
+corpus fell from 0.0523 to 0.0069 in English (62 of 8,942 characters) and from 0.0317 to 0.0053
+in Spanish (66 of 12,387). On the first 280 examples, it fell from 0.0201 to 0.0079 in English
+and from 0.0168 to 0.0053 in Spanish. There was no round-trip failure.
+
+| Type | en: gold | en: predicted | en: `recall_overlap` | en: `recall_exact` | en: `precision_exact` | es: gold | es: predicted | es: `recall_overlap` | es: `recall_exact` | es: `precision_exact` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `PERSON` (slice 16) | 890 | 855 | 0.912 | 0.856 | 0.891 | 890 | 893 | 0.942 | 0.857 | 0.854 |
+| `PERSON` | 890 | 929 | 0.996 | 0.939 | 0.900 | 890 | 945 | 0.999 | 0.913 | 0.860 |
+| `ORG` | 20 | 123 | 1.000 | 1.000 | 0.163 | 20 | 116 | 1.000 | 1.000 | 0.172 |
+
+| Type | Language | `mentions` | `placed` | `same_pairs` | `linked` | `wrong` | `link_recall` | `link_precision` |
+|---|---|---|---|---|---|---|---|---|
+| `PERSON` (slice 16) | en | 890 | 812 | 432 | 322 | 30 | 0.745 | 0.915 |
+| `PERSON` | en | 890 | 886 | 506 | 398 | 30 | 0.787 | 0.930 |
+| `PERSON` (slice 16) | es | 890 | 838 | 458 | 370 | 30 | 0.808 | 0.925 |
+| `PERSON` | es | 890 | 889 | 509 | 429 | 30 | 0.843 | 0.935 |
+| `ORG` | en | 20 | 20 | 0 | 0 | 0 | 1.000 | 1.000 |
+| `ORG` | es | 20 | 20 | 0 | 0 | 0 | 1.000 | 1.000 |
+
+By category, of the 14 earlier categories only `lower` changed, to the same numbers as in the
+dictionary run, because its lower-case shorter forms are now replaced. The new categories give
+the numbers of the dictionary run, except Spanish `hyphen`, where 8 characters leak: in one
+example the model finds the name without its second surname, which is then no form of the
+person. The synthetic corpora give the same numbers as before, rules only and with the ML
+layer, with the same predicted spans.

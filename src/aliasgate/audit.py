@@ -6,7 +6,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 from aliasgate.mapping import Entity, Mapping
-from aliasgate.terms import build_term_pattern, starts_upper, term_body
+from aliasgate.terms import TERM_END, TERM_START, build_term_pattern, starts_upper, term_body
 from aliasgate.types import LITERAL
 
 
@@ -65,9 +65,9 @@ def _found(entity: Entity, strings: list[str], folded: list[str]) -> bool:
 
 
 def _whole_terms(bodies: Iterable[str], flags: int = 0) -> re.Pattern[str]:
-    """Any of the bodies as a whole term. Folded text is matched by folded keys, without
-    IGNORECASE."""
-    return re.compile(rf"(?<!\w)(?:{'|'.join(bodies)})(?!\w)", flags)
+    """Any of the bodies as a whole term, with the boundaries of `build_term_pattern`. Folded
+    text is matched by folded keys, without IGNORECASE."""
+    return re.compile(f"{TERM_START}(?:{'|'.join(bodies)}){TERM_END}", flags)
 
 
 def _search(pattern: re.Pattern[str], strings: list[str]) -> bool:

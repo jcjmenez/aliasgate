@@ -9,7 +9,7 @@ from hypothesis import strategies as st
 
 from aliasgate.audit import AuditResult, audit_outbound
 from aliasgate.mapping import Entity, Mapping
-from aliasgate.terms import build_term_pattern, term_body
+from aliasgate.terms import TERM_END, TERM_START, build_term_pattern, term_body
 
 SURFACES = ("Juan Pérez", "ACME Corporation", "juan.perez@example.com")
 
@@ -230,6 +230,33 @@ def test_a_mapping_of_capitalised_entities_only_is_audited_by_the_term_pattern()
     assert audit_outbound({"x": "La Mesa"}, mapping, min_length=3) == AuditResult(1, ("PERSON",))
 
 
+# Slice 17: the whole-term boundary excludes a following 't, and a person's name word that is
+# replaced in lower case too (`capitalised=False`) is audited like any entity.
+
+
+@pytest.mark.parametrize("capitalised", [False, True])
+def test_dont_is_not_reported_for_an_entity_don_by_either_search(capitalised: bool) -> None:
+    mapping = Mapping()
+    mapping.assign("PERSON", "Don", capitalised=capitalised)
+    for text in ("Don't close it", "DON'T", "don\u2019t", "Don\u2019t worry"):
+        assert audit_outbound({"metadata": {"note": text}}, mapping, min_length=3) == AuditResult(
+            0, ()
+        )
+    assert audit_outbound({"x": "Don's form"}, mapping, min_length=3) == AuditResult(1, ("PERSON",))
+
+
+@pytest.mark.parametrize(
+    "text", ["thanks lucía", "LUCÍA", "luci" + chr(0x301) + "a", "gracias Lucía"]
+)
+def test_a_lower_case_eligible_name_word_is_reported_in_any_case_and_by_its_folded_key(
+    text: str,
+) -> None:
+    mapping = Mapping()
+    person = mapping.assign("PERSON", "Lucía Romero")
+    mapping.assign("PERSON", "Lucía", variant_of=person, capitalised=False)
+    assert audit_outbound({"x": text}, mapping, min_length=3) == AuditResult(1, ("PERSON",))
+
+
 def _insert(value: Any, path: list[int], surface: str) -> Any:
     """Put `surface` into one string, list or dict of `value`, chosen by `path`."""
     if isinstance(value, str):
@@ -275,7 +302,8 @@ def _reference(payload: list[str], mapping: Mapping, min_length: int) -> AuditRe
         if entity.capitalised:
             return any(match[0].isupper() or match[0].istitle() for match in matches)
         return bool(matches) or any(
-            re.search(rf"(?<!\w)(?:{term_body(entity.key)})(?!\w)", text) for text in folded
+            re.search(rf"{TERM_START}(?:{term_body(entity.key)}){TERM_END}", text)
+            for text in folded
         )
 
     leaked = [
@@ -287,7 +315,8 @@ def _reference(payload: list[str], mapping: Mapping, min_length: int) -> AuditRe
 
 
 _WORDS = st.sampled_from(["Ana", "ana", "Banana", "Straße", "STRASSE", "Juan", "Pérez", "J.P.",
-                          "a+b", "x", "[ORG_1]", FULL_WIDTH_ACME, "ACME", "acme-co"])  # fmt: skip
+                          "a+b", "x", "[ORG_1]", FULL_WIDTH_ACME, "ACME", "acme-co", "Don",
+                          "Don't", "DON'T", "don's"])  # fmt: skip
 _PHRASE = st.lists(_WORDS, min_size=1, max_size=3).map(" ".join)
 
 

@@ -6,6 +6,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from aliasgate.common_words import COMMON_WORDS
 from aliasgate.detectors.dictionary import DictionaryDetector, Term
 from aliasgate.detectors.rules import DEFAULT_RULE_TYPES, RuleDetector
 from aliasgate.engine import (
@@ -17,7 +18,7 @@ from aliasgate.engine import (
 )
 from aliasgate.eval.metrics import expected_restoration
 from aliasgate.mapping import normalize_key
-from aliasgate.names import name_tokens
+from aliasgate.names import is_person, name_parts, name_words
 from aliasgate.terms import build_term_pattern
 from aliasgate.types import (
     PRIORITY_DICTIONARY,
@@ -619,10 +620,11 @@ def test_shorter_forms_of_a_detected_name_become_its_variants_and_restore_as_wri
         "[PERSON_1] opened the ticket. Ms. [PERSON_1_B] replied. [PERSON_1_C] called.",
     )
     assert _restored(batch) == [ALICE]
+    # Neither word is a common word, so both are replaced in lower case too (slice 17).
     assert [(e.surface, e.capitalised) for e in batch.mapping.entities()] == [
         ("Alice Johnson", False),
-        ("Johnson", True),
-        ("Alice", True),
+        ("Johnson", False),
+        ("Alice", False),
     ]
 
 
@@ -684,11 +686,32 @@ def test_a_detected_span_of_another_type_is_never_linked_to_a_person() -> None:
     assert batch.texts == ("[PERSON_1] met [ORG_1].",)
 
 
-@pytest.mark.parametrize("full", ["J. R. Smith", "Dr. Smith"])
-def test_a_name_with_a_single_name_token_is_not_a_person(full: str) -> None:
-    # Known gap (docs/usage.md §7): only a name with two name tokens gives its words.
-    batch = _people(full).pseudonymize([f"{full} called. Smith paid."])
-    assert batch.texts == ("[PERSON_1] called. Smith paid.",)
+@pytest.mark.parametrize(
+    ("full", "surname"),
+    [
+        ("Dr. Smith", "Smith"),
+        ("J. Smith", "Smith"),
+        ("Mr Smith", "Smith"),
+        ("J. R. Smith", "Smith"),
+        ("Sr. Pérez", "Pérez"),
+    ],
+)
+def test_a_name_with_one_name_token_and_a_title_or_an_initial_is_a_person(
+    full: str, surname: str
+) -> None:
+    # Slice 16 left the surname as written (a known gap); slice 17 makes it a variant.
+    text = f"{full} called. {surname} wants it."
+    batch = _people(full).pseudonymize([text])
+    assert batch.texts == ("[PERSON_1] called. [PERSON_1_B] wants it.",)
+    assert _restored(batch) == [text]
+
+
+def test_a_detected_surname_after_a_title_and_surname_links_to_it() -> None:
+    batch = _people("Dr. Smith", "Smith").pseudonymize(["Dr. Smith called. Smith wants it."])
+    assert [(e.surface, e.placeholder, e.capitalised) for e in batch.mapping.entities()] == [
+        ("Dr. Smith", "[PERSON_1]", False),
+        ("Smith", "[PERSON_1_B]", False),
+    ]
 
 
 def test_a_name_that_is_also_a_common_word_is_replaced_only_where_capitalised() -> None:
@@ -698,10 +721,20 @@ def test_a_name_that_is_also_a_common_word_is_replaced_only_where_capitalised() 
     assert _restored(batch) == [text]
 
 
-def test_a_name_word_that_occurs_only_in_lower_case_creates_no_entity() -> None:
-    batch = _people("Alice Johnson").pseudonymize(["Alice Johnson wrote. thanks alice, got it"])
-    assert batch.texts == ("[PERSON_1] wrote. thanks alice, got it",)
-    assert len(batch.mapping) == 1
+LARRY = "Larry Thompson wrote earlier about the refund. thanks larry, got it"
+
+
+def test_a_lower_case_shorter_form_is_replaced_and_restored_as_written() -> None:
+    # Slice 16 left "larry" as written; slice 17 replaces it, since it is no common word.
+    batch = _people("Larry Thompson").pseudonymize([LARRY])
+    assert batch.texts == (
+        "[PERSON_1] wrote earlier about the refund. thanks [PERSON_1_B], got it",
+    )
+    assert _restored(batch) == [LARRY]
+    assert [(e.surface, e.capitalised) for e in batch.mapping.entities()] == [
+        ("Larry Thompson", False),
+        ("larry", False),
+    ]
 
 
 def test_a_capitalised_common_word_equal_to_a_name_word_is_replaced_too() -> None:
@@ -782,6 +815,106 @@ def test_without_propagation_only_detected_shorter_forms_are_linked() -> None:
     assert len(batch.mapping) == 2
 
 
+def test_a_common_word_that_is_a_name_word_is_replaced_only_where_capitalised() -> None:
+    text = "Juan Para Gómez llamó. Es para mañana, dijo Para."
+    batch = _people("Juan Para Gómez").pseudonymize([text])
+    assert batch.texts == ("[PERSON_1] llamó. Es para mañana, dijo [PERSON_1_B].",)
+    assert [(e.surface, e.capitalised) for e in batch.mapping.entities()][1] == ("Para", True)
+    assert _restored(batch) == [text]
+
+
+def test_a_name_detected_in_lower_case_gives_no_lower_case_replacement() -> None:
+    text = "larry thompson wrote. thanks larry. Larry will call."
+    batch = _people("larry thompson").pseudonymize([text])
+    assert batch.texts == ("[PERSON_1] wrote. thanks larry. [PERSON_1_B] will call.",)
+    assert [(e.surface, e.capitalised) for e in batch.mapping.entities()][1] == ("Larry", True)
+
+
+def test_a_lower_case_form_before_the_capitalised_one_gives_one_entity_written_in_lower_case() -> (
+    None
+):
+    text = "Larry Thompson wrote. thanks larry. Larry said yes."
+    batch = _people("Larry Thompson").pseudonymize([text])
+    assert batch.texts == ("[PERSON_1] wrote. thanks [PERSON_1_B]. [PERSON_1_B] said yes.",)
+    assert [e.surface for e in batch.mapping.entities()] == ["Larry Thompson", "larry"]
+    assert _restored(batch) == ["Larry Thompson wrote. thanks larry. larry said yes."]
+
+
+def test_a_particle_alone_does_not_make_a_detected_name_a_person() -> None:
+    text = "El cliente llamó. El cliente quiere el reembolso; Cliente nuevo, cliente feliz."
+    batch = _people("El cliente").pseudonymize([text])
+    assert batch.texts == (
+        "[PERSON_1] llamó. [PERSON_1] quiere el reembolso; Cliente nuevo, cliente feliz.",
+    )
+    assert len(batch.mapping) == 1
+
+
+def test_each_part_of_a_hyphenated_name_is_a_variant_but_not_a_word_of_a_run() -> None:
+    text = "Anne-Marie Fowler called. Anne paid, Marie signed and Fowler left."
+    batch = _people("Anne-Marie Fowler").pseudonymize([text])
+    assert batch.texts == (
+        "[PERSON_1] called. [PERSON_1_B] paid, [PERSON_1_C] signed and [PERSON_1_D] left.",
+    )
+    assert _restored(batch) == [text]
+    detected = _people("Anne-Marie Fowler", "Anne Fowler").pseudonymize(
+        ["Anne-Marie Fowler called. Anne Fowler paid."]
+    )
+    assert detected.texts == ("[PERSON_1] called. [PERSON_2] paid.",)
+
+
+def test_a_detected_run_that_starts_with_a_part_is_not_linked() -> None:
+    text = "María-José Romero llamó. José Romero pagó."
+    batch = _people("María-José Romero", "José Romero").pseudonymize([text])
+    assert batch.texts == ("[PERSON_1] llamó. [PERSON_2] pagó.",)
+
+
+def test_a_detected_part_links_to_a_one_word_hyphenated_name() -> None:
+    batch = _people("María-José", "José").pseudonymize(["María-José llamó. José pagó."])
+    assert batch.texts == ("[PERSON_1] llamó. [PERSON_1_B] pagó.",)
+    undetected = _people("María-José").pseudonymize(["María-José llamó. José pagó."])
+    assert undetected.texts == ("[PERSON_1] llamó. [PERSON_1_B] pagó.",)
+
+
+def test_don_is_a_first_name_before_one_other_name_word_but_never_in_dont() -> None:
+    text = "Don Draper called. Don wants a copy, and Draper will sign it. Don't worry."
+    batch = _people("Don Draper").pseudonymize([text])
+    assert batch.texts == (
+        "[PERSON_1] called. [PERSON_1_B] wants a copy, and [PERSON_1_C] will sign it. Don't worry.",
+    )
+    assert _restored(batch) == [text]
+
+
+def test_don_before_two_name_words_stays_a_title() -> None:
+    text = "Don Juan Pérez llamó. Don Pedro no sabe nada."
+    batch = _people("Don Juan Pérez").pseudonymize([text])
+    assert batch.texts == ("[PERSON_1] llamó. Don Pedro no sabe nada.",)
+
+
+def test_without_propagation_no_lower_case_word_nobody_detected_is_replaced() -> None:
+    batch = _people("Larry Thompson", propagate=False).pseudonymize([LARRY])
+    assert batch.texts == ("[PERSON_1] wrote earlier about the refund. thanks larry, got it",)
+    assert len(batch.mapping) == 1
+
+
+def test_with_person_tokens_off_the_lower_case_form_stays() -> None:
+    batch = _people("Larry Thompson", person_tokens=False).pseudonymize([LARRY])
+    assert batch.texts == ("[PERSON_1] wrote earlier about the refund. thanks larry, got it",)
+
+
+def test_an_allow_listed_word_never_decides_whether_a_name_is_a_person() -> None:
+    # Decided with the maintainer for slice 17: the allow list removes forms, it does not make
+    # a detected name less of a person. Slice 16 left "Michael" as written here.
+    text = "Michael Jordan called. Michael paid; Jordan is a country."
+    batch = _people("Michael Jordan", allow_list=["jordan"]).pseudonymize([text])
+    assert batch.texts == ("[PERSON_1] called. [PERSON_1_B] paid; Jordan is a country.",)
+
+
+def test_an_allow_listed_part_is_not_replaced() -> None:
+    text = "Anne-Marie Fowler called. Anne paid, Marie signed."
+    batch = _people("Anne-Marie Fowler", allow_list=["anne"]).pseudonymize([text])
+    assert batch.texts == ("[PERSON_1] called. Anne paid, [PERSON_1_B] signed.",)
+
+
 def test_with_person_tokens_off_the_output_is_that_of_slice_15() -> None:
     assert _people("Alice Johnson", person_tokens=False).pseudonymize([ALICE]).texts == (
         "[PERSON_1] opened the ticket. Ms. Johnson replied. Alice called.",
@@ -842,7 +975,7 @@ def test_a_name_words_entity_may_exist_without_a_replaced_occurrence() -> None:
 
 # Properties of person name tokens.
 
-_NAMES = (
+_BASE_NAMES = (
     "Alice Johnson",
     "Bob Smith",
     "Alice Smith",
@@ -855,18 +988,31 @@ _NAMES = (
     "Mary Ann Lee",
     "Liam O'Connor",
 )
-_NAME_WORDS = sorted({word for name in _NAMES for word in name.split() if len(word) >= 3})
+# Slice 17: one name word with a title or an initial, hyphenated names and `Don`, with their
+# shorter forms, drawn on their own so that most batches hold one of these persons and a form.
+_FORM_NAMES = ("Dr. Holloway", "J. Fowler", "Anne-Marie Fowler", "María-José", "Don Draper",
+               "Don Juan Pérez")  # fmt: skip
+_FORMS = ("Holloway", "Fowler", "Anne", "Marie", "José", "Don", "Draper", "holloway", "anne",
+          "josé", "draper", "Don't")  # fmt: skip
+_NAMES = (*_BASE_NAMES, *_FORM_NAMES)
+_NAME_WORDS = sorted(
+    {word for name in _NAMES for word in name.split() if len(word) >= 3}
+    | {part for name in _NAMES for word in name.split() for part in word.split("-")[1:]}
+    | {word.split("-")[0] for name in _NAMES for word in name.split() if "-" in word}
+)
 _CASES = sorted(
     {form for word in _NAME_WORDS for form in (word, word.lower(), word.upper(), word.swapcase())}
 )
 _PERSON_TOKENS = st.one_of(
     st.sampled_from([f"{name} " for name in _NAMES]),
+    st.sampled_from([f"{name} " for name in _FORM_NAMES]),
+    st.sampled_from([f"{form} " for form in _FORMS]),
     st.sampled_from([f"{form} " for form in _CASES]),
     st.sampled_from([f"{form} " for form in _CASES]),
     st.sampled_from(
         [
             "the ", "said ", ". ", ", ", "\n", "'s ", "(", ") ", "Sr. ", "Ms. ", "de ", "x",
-            "[", "]", "_", "1", "PERSON", "-", "",
+            "[", "]", "_", "1", "PERSON", "-", "", "'t ", "Don't ", "J. ", "Mr ",
         ]
     ),
 )  # fmt: skip
@@ -898,22 +1044,35 @@ def test_property_round_trip_with_person_tokens_gives_the_expected_restoration(
         assert restore(done, batch.mapping) == expected
 
 
+def _one_word_forms(surface: str) -> dict[str, str]:
+    """The keys of a person's name tokens and name parts, with each as written."""
+    forms: dict[str, str] = {}
+    for key, word in name_words(surface, min_length=3):
+        forms.setdefault(key, word)
+        for part_key, part in name_parts(word, min_length=3):
+            forms.setdefault(part_key, part)
+    return forms
+
+
 @_PERSON_PROPERTY
 @given(_PERSON_BATCH)
-def test_property_no_capitalised_word_of_a_person_is_left_on_its_own(texts: list[str]) -> None:
+def test_property_no_name_word_of_a_person_is_left_on_its_own(texts: list[str]) -> None:
+    # Capitalised, or in any case when it is lower-case eligible (slice 17): every name written
+    # in `_NAMES` is capitalised, so a word is eligible unless it is a common word.
     batch = _named().pseudonymize(texts)
-    persons = [
-        entity
-        for entity in batch.mapping.entities()
-        if entity.entity_type == "PERSON" and len(name_tokens(entity.surface, min_length=3)) >= 2
-    ]
-    for person in persons:
-        for key in name_tokens(person.surface, min_length=3):
-            for text in batch.texts:
-                for match in build_term_pattern(key).finditer(text):
-                    assert not (
-                        _starts_upper(match.group()) and normalize_key(match.group()) == key
-                    ), "a capitalised name word was left in the output"
+    written: dict[str, str] = {}
+    for entity in batch.mapping.entities():
+        if entity.entity_type == "PERSON" and is_person(entity.surface, min_length=3):
+            for key, word in _one_word_forms(entity.surface).items():
+                written.setdefault(key, word)
+    for key, word in written.items():
+        eligible = key not in COMMON_WORDS and _starts_upper(word)
+        for text in batch.texts:
+            for match in build_term_pattern(key).finditer(text):
+                assert not (
+                    (eligible or _starts_upper(match.group()))
+                    and normalize_key(match.group()) == key
+                ), "a name word was left in the output"
 
 
 @_PERSON_PROPERTY

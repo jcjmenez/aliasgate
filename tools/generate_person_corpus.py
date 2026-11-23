@@ -1,10 +1,14 @@
-"""Generate the person mentions corpus in tests/eval/corpus/ (slice 15).
+"""Generate the person mentions corpus in tests/eval/corpus/ (slices 15 and 17).
 
 Each example names one or two persons, by their full name and by the shorter forms people use:
-a first name, a surname, a title with a surname, part of a Spanish name with two surnames. Gold
-spans carry entity ids, so the evaluation can tell whether the mentions of one person share a
-placeholder number and whether those of two persons do not. The dictionary file holds every
-full name, so that CI finds the full names and measures the shorter forms on their own.
+a first name, a surname, a title with a surname, part of a Spanish name with two surnames, one
+part of a hyphenated name. Gold spans carry entity ids, so the evaluation can tell whether the
+mentions of one person share a placeholder number and whether those of two persons do not. The
+dictionary file holds the first full-name mention of every person (in `single`, the title or
+initial with the surname), so that CI finds it and measures the shorter forms on their own.
+
+The categories of slice 17 (`NEW_CATEGORIES`) are drawn after the other categories of both
+languages, so that adding them left the earlier lines and dictionary entries as they were.
 
 Deterministic: the fixed seeds below produce byte-identical files for a given Faker version.
 Every name is synthetic: words come from Faker or from the fixed word lists below. This
@@ -20,7 +24,7 @@ import json
 import random
 import re
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -34,6 +38,7 @@ LANGUAGES: Final = {"en": ("en_US", 1201), "es": ("es_ES", 1202)}  # locale, see
 TERMS_FILE: Final = "persons.terms.yaml"
 RENDERS: Final = 10  # per template
 MAX_ATTEMPTS: Final = 1000  # draws per example before giving up
+NEW_CATEGORIES: Final = ("single", "hyphen", "don")  # slice 17, drawn last
 
 # A name word is drawn again if it is one of these (compared case-insensitively). Slice 16
 # defines the engine's own lists; this generator keeps its own copy on purpose.
@@ -107,6 +112,10 @@ _TITLE_FORMS: Final[dict[str, dict[str, tuple[str, ...]]]] = {
 }
 _GENDERS: Final = ("female", "male")
 _NAME_WORD: Final = re.compile(r"[^\W\d_]+(?:['-][^\W\d_]+)?")
+_PLAIN_WORD: Final = re.compile(r"[^\W\d_]+")
+# The English first name of the category `don`, which also starts the common word "Don't".
+DON: Final = "Don"
+_NOT_T: Final = "(?!['\u2019]t(?!\\w))"
 
 # Templates -------------------------------------------------------------------------------------
 # Slots: {a} and {b} are the full names of two persons; {a.first}, {a.last}, {a.middle},
@@ -114,7 +123,11 @@ _NAME_WORD: Final = re.compile(r"[^\W\d_]+(?:['-][^\W\d_]+)?")
 # Spanish surnames) are shorter forms; {a.first|lower} gives a form in lower case. Each of these
 # is a PERSON gold span. {a.title} is the person's title, outside the span. {org} is an
 # organisation named after the surname of {a} (an ORG gold span), and {common} is the
-# common-word use of the listed name of the example.
+# common-word use of the listed name of the example. Slice 17 adds the PERSON forms
+# {a.initial_last} (the first name's initial and the surname), {a.first_head} (the first part of
+# a hyphenated first name) and {a.last_tail} (the last part of a hyphenated surname), the
+# Spanish title {a.don} (`don` or `doña`, outside the span), and {x|capital}, which writes the
+# first letter of a slot in upper case.
 
 TEMPLATES: Final[dict[str, dict[str, tuple[str, str]]]] = {
     "en": {
@@ -187,6 +200,18 @@ TEMPLATES: Final[dict[str, dict[str, tuple[str, str]]]] = {
             "{a} works at {org}. {a.last} will send the quote on Monday.",
             "CRM note: {org} renewed the contract. Our contact there is {a}; {a.last} prefers "
             "email.",
+        ),
+        "single": (
+            "{a.title} {a.last} reviewed the claim. {a.last} asked for the invoice.",
+            "Ticket from {a.initial_last}: the parcel is late. {a.last} wants a refund.",
+        ),
+        "hyphen": (
+            "{a} opened the ticket. {a.first_head} replied with the order number.",
+            "{a} renewed the plan. {a.last_tail} asked for a copy.",
+        ),
+        "don": (
+            "Don't close the ticket yet: {a} called about the invoice. {a.first} wants a copy.",
+            "{a} sent the form. Don't worry, {a.last} will sign it today.",
         ),
     },
     # Spanish templates avoid "y" and "o" before a name, which would become "e" and "u" before
@@ -262,13 +287,28 @@ TEMPLATES: Final[dict[str, dict[str, tuple[str, str]]]] = {
             "Nota CRM: {org} renovó el contrato. El contacto allí es {a}; {a.last} prefiere el "
             "correo.",
         ),
+        "single": (
+            "Hoy ha llamado {a.title} {a.last}. {a.last} pide la factura original.",
+            "Incidencia de {a.initial_last}: el paquete llega tarde. {a.last} quiere el reembolso.",
+        ),
+        "hyphen": (
+            "{a} abrió la incidencia. {a.first_head} respondió con el número de pedido.",
+            "{a} firmó el contrato. {a.last_tail} pide una copia.",
+        ),
+        "don": (
+            "Atendí a {a.don} {a} esta mañana. {a.first} pide la factura de marzo.",
+            "{a.don|capital} {a} llamó ayer. {a.title|capital} {a.last} quiere el reembolso.",
+        ),
     },
 }
 
-_SLOT: Final = re.compile(r"\{(a|b|org|common)(?:\.([a-z_]+))?(?:\|(lower))?\}")
+_SLOT: Final = re.compile(r"\{(a|b|org|common)(?:\.([a-z_]+))?(?:\|(lower|capital))?\}")
 _PERSON_FORMS: Final = frozenset(
-    {"", "first", "last", "middle", "last2", "first_last", "middle_last", "surnames"}
-)
+    {
+        "", "first", "last", "middle", "last2", "first_last", "middle_last", "surnames",
+        "initial_last", "first_head", "last_tail",
+    }
+)  # fmt: skip
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,6 +334,10 @@ class _Person:
             "middle_last": (self.middle, self.last),
             "surnames": (self.last, self.last2),
             "title": (self.title,),
+            "initial_last": (f"{self.first[:1]}.", self.last),
+            "first_head": (self.first.split("-")[0] if "-" in self.first else "",),
+            "last_tail": (self.last.split("-")[-1] if "-" in self.last else "",),
+            "don": ("don" if self.gender == "male" else "doña",),
         }[name]
         if not all(parts):
             raise ValueError(f"a template asks for the form {name!r} of a person without it")
@@ -305,13 +349,20 @@ class _Person:
     def words(self) -> list[str]:
         return normalize_key(self.full()).split()
 
+    def parts(self) -> list[str]:
+        """The words of the full name, followed by the parts of each hyphenated word."""
+        words = self.full().split()
+        return words + [part for word in words if "-" in word for part in word.split("-")]
+
 
 @dataclass(frozen=True, slots=True)
 class _Example:
     text: str
     spans: tuple[tuple[int, int, str, str], ...]  # start, end, type, entity id
-    full_names: tuple[str, ...]  # first full-name mention of each person, in text order
-    shorter: tuple[str, ...]  # PERSON mentions that are not a full name
+    # The dictionary term of each person, in text order: its first full-name mention, or in
+    # `single`, its title or initial with the surname.
+    terms: tuple[str, ...]
+    shorter: tuple[str, ...]  # PERSON mentions that are not a term
 
 
 def _usable(word: str) -> bool:
@@ -342,6 +393,17 @@ class _Names:
         fake = self._fake
         return self._draw(fake.first_name_female if gender == "female" else fake.first_name_male)
 
+    def _hyphenated(self, make: Callable[[], str]) -> str:
+        """Two drawn words of one kind joined by a hyphen, each a usable word of letters."""
+
+        def word() -> str:
+            while True:
+                drawn = self._draw(make)
+                if _PLAIN_WORD.fullmatch(drawn):
+                    return drawn
+
+        return f"{word()}-{word()}"
+
     def person(
         self,
         *,
@@ -359,12 +421,23 @@ class _Names:
         return _Person(gender, first, last, middle_name, last2, title)
 
     def persons(self, category: str, labels: set[str]) -> dict[str, _Person]:
-        """The persons a template of `category` names, before any check."""
+        """The persons a template of `category` names, before any check. `labels` holds the
+        template's slots: `a`, `b`, `org` and `common`, and `a.form` for each form of `a`."""
         if category == "word":
             a = self.person(last=self.rng.choice(WORD_SURNAMES[self.lang]))
         elif category == "sentence":
             word = self.rng.choice(sorted(WORD_FIRST_NAMES[self.lang]))
             a = self.person(gender=WORD_FIRST_NAMES[self.lang][word], first=word)
+        elif category == "hyphen" and "a.first_head" in labels:
+            gender = self.rng.choice(_GENDERS)
+            make = (
+                self._fake.first_name_female if gender == "female" else self._fake.first_name_male
+            )
+            a = self.person(gender=gender, first=self._hyphenated(make))
+        elif category == "hyphen":
+            a = self.person(last=self._hyphenated(self._fake.last_name))
+        elif category == "don" and self.lang == "en":
+            a = self.person(gender="male", first=DON)
         else:
             a = self.person(middle=category == "run" and self.lang == "en")
         persons = {"a": a}
@@ -416,6 +489,8 @@ def _render(
             value = persons[label].form(form)
             if case == "lower":
                 value = value.lower()
+            elif case == "capital":
+                value = value[:1].upper() + value[1:]
             if form in _PERSON_FORMS:
                 entity = ids.setdefault(label, f"p{len(ids) + 1}")
                 spans.append((length, length + len(value), "PERSON", entity))
@@ -432,9 +507,16 @@ def _inside(spans: Sequence[tuple[int, int, str, str]], start: int, end: int) ->
 
 def _example(category: str, index: int, template: str, names: _Names) -> _Example | None:
     """One drawing for `template`, or None if its persons break a rule of the corpus."""
-    labels = {match[1] for match in _SLOT.finditer(template)}
+    slots = [(match[1], match[2]) for match in _SLOT.finditer(template)]
+    labels = {label for label, _ in slots} | {f"{label}.{form}" for label, form in slots if form}
     persons = names.persons(category, labels)
     if any(len(set(person.words())) != len(person.words()) for person in persons.values()):
+        return None
+    new = category in NEW_CATEGORIES
+    if new and any(
+        len({normalize_key(part) for part in person.parts()}) != len(person.parts())
+        for person in persons.values()
+    ):
         return None
     if "b" in persons:
         shared = set(persons["a"].words()) & set(persons["b"].words())
@@ -449,18 +531,30 @@ def _example(category: str, index: int, template: str, names: _Names) -> _Exampl
     org = f"{a.last} {names.rng.choice(ORG_SUFFIXES[names.lang])}" if "org" in labels else ""
     text, spans, mentions = _render(template, persons, org, COMMON[listed][index] if listed else "")
     # A name word occurs only inside gold spans, apart from the common use of a listed name.
+    # In the new categories, so does each part of a hyphenated word, and `Don` may also start
+    # the common word "Don't".
     for person in persons.values():
-        for word in person.full().split():
+        for word in person.parts() if new else person.full().split():
             if word == listed:
                 continue
-            pattern = re.compile(rf"(?<!\w){re.escape(word)}(?!\w)", re.IGNORECASE)
+            tail = _NOT_T if category == "don" and word == DON else ""
+            pattern = re.compile(rf"(?<!\w){re.escape(word)}(?!\w){tail}", re.IGNORECASE)
             if any(not _inside(spans, m.start(), m.end()) for m in pattern.finditer(text)):
                 return None
-    full_names = tuple(
-        surface for form, surface in mentions if form == "" and len(surface.split()) >= 2
+    terms = tuple(
+        dict.fromkeys(
+            surface for form, surface in mentions if form == "" and len(surface.split()) >= 2
+        )
     )
-    shorter = tuple(surface for form, surface in mentions if form != "" or len(surface.split()) < 2)
-    return _Example(text, tuple(spans), tuple(dict.fromkeys(full_names)), shorter)
+    if category == "single":
+        term = a.form("initial_last") if "a.initial_last" in labels else ""
+        terms = (term or f"{a.title.split()[-1]} {a.last}",)
+    shorter = tuple(
+        surface
+        for form, surface in mentions
+        if (form != "" or len(surface.split()) < 2) and surface not in terms
+    )
+    return _Example(text, tuple(spans), terms, shorter)
 
 
 def _parts(surface: str) -> set[str]:
@@ -473,31 +567,53 @@ def _parts(surface: str) -> set[str]:
     }
 
 
+def _any_term(terms: Iterable[str]) -> re.Pattern[str] | None:
+    """Any of the terms as a whole term, case-insensitively, with any whitespace inside."""
+    bodies = [r"\s+".join(map(re.escape, term.split())) for term in terms]
+    return re.compile(rf"(?<!\w)(?:{'|'.join(bodies)})(?!\w)", re.IGNORECASE) if bodies else None
+
+
 class _Corpus:
-    """Both languages, with the full names and the runs of shorter forms seen so far: the
-    dictionary of full names applies to every example, so no shorter form may contain one."""
+    """Both languages, with the terms, the runs of shorter forms and the texts seen so far: the
+    dictionary of terms applies to every example, so no shorter form may contain one."""
 
     def __init__(self) -> None:
         self.full_keys: set[str] = set()
         self.shorter_parts: set[str] = set()
-        self.terms: dict[str, str] = {}  # key -> full name as first written
+        self.terms: dict[str, str] = {}  # key -> term as first written
+        self.texts: list[str] = []
 
     def accepts(self, example: _Example) -> bool:
-        full = {normalize_key(name) for name in example.full_names}
+        full = {normalize_key(name) for name in example.terms}
         parts = {part for surface in example.shorter for part in _parts(surface)}
         return not (full & (self.shorter_parts | parts)) and not (parts & self.full_keys)
 
+    def isolated(self, example: _Example) -> bool:
+        """Whether every term matches only where it names its person: no earlier term occurs
+        in the example's text, not even inside a word joined by a hyphen, and no term of the
+        example occurs in an earlier text. Checked for the new categories only, so that the
+        dictionary finds in the earlier lines exactly what it found before them."""
+        earlier = _any_term(self.terms.values())
+        if earlier is not None and earlier.search(example.text):
+            return False
+        own = _any_term(example.terms)
+        return own is None or not any(own.search(text) for text in self.texts)
+
     def add(self, example: _Example) -> None:
-        for name in example.full_names:
+        for name in example.terms:
             self.full_keys.add(normalize_key(name))
             self.terms.setdefault(normalize_key(name), name)
         self.shorter_parts.update(part for surface in example.shorter for part in _parts(surface))
+        self.texts.append(example.text)
 
 
-def _language(lang: str, corpus: _Corpus) -> str:
-    names = _Names(lang)
+def _lines(names: _Names, categories: Sequence[str], corpus: _Corpus) -> list[str]:
+    """The JSON lines of the given categories of one language, in order."""
+    lang = names.lang
     lines = []
-    for category, templates in TEMPLATES[lang].items():
+    for category in categories:
+        templates = TEMPLATES[lang][category]
+        new = category in NEW_CATEGORIES
         for number in range(1, 2 * RENDERS + 1):
             index = (number - 1) % 2
             example_id = f"{lang}-{category}-{number:03d}"
@@ -505,7 +621,14 @@ def _language(lang: str, corpus: _Corpus) -> str:
                 _example(category, index, templates[index], names) for _ in range(MAX_ATTEMPTS)
             )
             example = next(
-                (drawn for drawn in drawings if drawn is not None and corpus.accepts(drawn)), None
+                (
+                    drawn
+                    for drawn in drawings
+                    if drawn is not None
+                    and corpus.accepts(drawn)
+                    and (not new or corpus.isolated(drawn))
+                ),
+                None,
             )
             if example is None:
                 raise RuntimeError(f"no valid names for {example_id} in {MAX_ATTEMPTS} draws")
@@ -516,14 +639,15 @@ def _language(lang: str, corpus: _Corpus) -> str:
             ]
             line = {"id": example_id, "lang": lang, "text": example.text, "spans": spans}
             lines.append(json.dumps(line, ensure_ascii=False))
-    return "\n".join(lines) + "\n"
+    return lines
 
 
 def _terms(corpus: _Corpus) -> str:
     lines = [
-        "# Generated by tools/generate_person_corpus.py; do not edit. The full name of every",
-        "# person of persons.en.jsonl and persons.es.jsonl, in order of first appearance, for",
-        "# the dictionary of persons.yaml. Synthetic values only.",
+        "# Generated by tools/generate_person_corpus.py; do not edit. The term of every person",
+        "# of persons.en.jsonl and persons.es.jsonl (the first full-name mention, or in `single`",
+        "# the title or initial with the surname), in order of first appearance, for the",
+        "# dictionary of persons.yaml. Synthetic values only.",
         "terms:",
     ]
     for name in corpus.terms.values():
@@ -532,9 +656,18 @@ def _terms(corpus: _Corpus) -> str:
 
 
 def generate() -> dict[str, str]:
-    """The content of every file of the person corpus, by file name."""
+    """The content of every file of the person corpus, by file name. The categories of slice
+    15 of both languages are drawn first, then the new ones, each language with its own
+    random generator, so that the new categories leave every earlier line as it was."""
     corpus = _Corpus()
-    files = {f"persons.{lang}.jsonl": _language(lang, corpus) for lang in LANGUAGES}
+    lines: dict[str, list[str]] = {lang: [] for lang in LANGUAGES}
+    names: dict[str, _Names] = {}
+    for new in (False, True):
+        for lang in LANGUAGES:
+            source = names.setdefault(lang, _Names(lang))
+            categories = [c for c in TEMPLATES[lang] if (c in NEW_CATEGORIES) == new]
+            lines[lang] += _lines(source, categories, corpus)
+    files = {f"persons.{lang}.jsonl": "\n".join(lines[lang]) + "\n" for lang in LANGUAGES}
     files[TERMS_FILE] = _terms(corpus)
     return files
 

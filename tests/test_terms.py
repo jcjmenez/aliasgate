@@ -2,7 +2,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from aliasgate.terms import build_term_pattern
+from aliasgate.terms import TERM_END, TERM_START, build_term_pattern
 
 
 @pytest.mark.parametrize("text", ["Juan Pérez", "JUAN  PÉREZ", "juan\npérez", "Juan\t \nPérez"])
@@ -63,3 +63,32 @@ def test_pattern_always_matches_its_own_stripped_surface(surface: str) -> None:
 def test_pattern_matches_any_whitespace_between_tokens(tokens: list[str]) -> None:
     pattern = build_term_pattern(" ".join(tokens))
     assert pattern.fullmatch("\n \t".join(tokens)) is not None
+
+
+# Slice 17: a whole term is never followed by 't and the end of a word.
+
+
+@pytest.mark.parametrize("text", ["Don't", "Don\u2019t", "DON'T", "don't go"])
+def test_a_term_does_not_match_before_an_apostrophe_t_that_ends_the_word(text: str) -> None:
+    assert build_term_pattern("Don").search(text) is None
+
+
+@pytest.mark.parametrize("text", ["Don's", "Don,", "Don.", "Don 't", "Don'tcha"])
+def test_a_term_still_matches_before_other_endings(text: str) -> None:
+    match = build_term_pattern("Don").search(text)
+    assert match is not None
+    assert match.span() == (0, 3)
+
+
+def test_the_boundary_applies_to_every_term_and_keeps_inner_apostrophes() -> None:
+    assert build_term_pattern("Can").search("I can't") is None
+    assert build_term_pattern("Won").search("it won\u2019t") is None
+    assert build_term_pattern("O'Connor").fullmatch("O'Connor") is not None
+    assert build_term_pattern("Juan Pérez").search("Juan Pérez't") is None
+
+
+def test_the_shared_boundaries_are_the_ones_build_term_pattern_uses() -> None:
+    pattern = build_term_pattern("Don")
+    assert pattern.pattern == f"{TERM_START}(?:Don){TERM_END}"
+    assert TERM_START == r"(?<!\w)"
+    assert TERM_END == "(?!\\w|['\u2019]t(?!\\w))"
