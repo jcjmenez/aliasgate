@@ -51,6 +51,7 @@ def build_pseudonymizer(settings: Settings) -> Pseudonymizer:
         propagate=detection.propagate,
         min_propagation_length=detection.min_propagation_length,
         person_tokens=detection.person_tokens,
+        org_tokens=detection.org_tokens,
     )
 
 

@@ -177,6 +177,17 @@ def test_check_prints_whether_person_tokens_are_on_after_propagation(
     assert f"propagation: on\nperson tokens: {shown}\n" in out
 
 
+@pytest.mark.parametrize(("value", "shown"), [("true", "on"), ("false", "off")])
+def test_check_prints_whether_org_tokens_are_on_after_person_tokens(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str, shown: str
+) -> None:
+    config = tmp_path / "aliasgate.yaml"
+    config.write_text(f"detection:\n  org_tokens: {value}\n", encoding="utf-8")
+    code, out, _ = _run(capsys, "check", "--config", str(config))
+    assert code == 0
+    assert f"person tokens: on\norg tokens: {shown}\nmetrics:" in out
+
+
 def test_check_summary_lists_passthrough_entries_and_the_ml_model(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -19,6 +19,7 @@ from aliasgate.engine import (
 from aliasgate.eval.metrics import expected_restoration
 from aliasgate.mapping import normalize_key
 from aliasgate.names import is_person, name_parts, name_words
+from aliasgate.orgs import OrgWordKind, org_words
 from aliasgate.terms import build_term_pattern
 from aliasgate.types import (
     PRIORITY_DICTIONARY,
@@ -995,6 +996,28 @@ _FORM_NAMES = ("Dr. Holloway", "J. Fowler", "Anne-Marie Fowler", "María-José",
 _FORMS = ("Holloway", "Fowler", "Anne", "Marie", "José", "Don", "Draper", "holloway", "anne",
           "josé", "draper", "Don't")  # fmt: skip
 _NAMES = (*_BASE_NAMES, *_FORM_NAMES)
+# Slice 19: organisations of both language shapes, two sharing a distinctive word, two sharing a
+# generic word, one whose word is a common word, and two that share a word with a person.
+_ORG_NAMES = ("Brightwater Logistics Ltd", "Brightwater Analytics LLC",
+              "Transportes Ventisquero S.L.", "Albarrán y Ledesma S.A.", "Welch Logistics LLC",
+              "Pitts Logistics Ltd", "Hale, Mercer and Quill LLP", "Grupo Peñalver",
+              "Stone Logistics Ltd", "Romero Logistics Ltd", "Johnson Freight PLC")  # fmt: skip
+_ORG_FORMS = ("Brightwater", "Ventisquero", "Albarrán", "Ledesma", "Welch", "Pitts", "Hale",
+              "Mercer", "Quill", "Peñalver", "Romero", "Johnson", "Brightwater Logistics",
+              "Transportes Ventisquero", "Albarrán y Ledesma", "Stone Logistics", "Logistics",
+              "Transportes", "Grupo", "Analytics", "Freight", "Ltd", "S.L.", "LLC")  # fmt: skip
+# Pairs drawn together, so that many batches hold a word of two organisations, or of a person
+# and an organisation, next to that word alone.
+_ORG_PAIRS = (
+    "Brightwater Logistics Ltd and Brightwater Analytics LLC",
+    "Alice Johnson at Johnson Freight PLC",
+    "Johnson Freight PLC and Alice Johnson",
+    "Lucía Romero, Romero Logistics Ltd",
+    "Welch Logistics LLC and Pitts Logistics Ltd",
+)
+_ORG_CASES = sorted(
+    {form for word in _ORG_FORMS for form in (word, word.lower(), word.upper(), word.swapcase())}
+)
 _NAME_WORDS = sorted(
     {word for name in _NAMES for word in name.split() if len(word) >= 3}
     | {part for name in _NAMES for word in name.split() for part in word.split("-")[1:]}
@@ -1009,6 +1032,10 @@ _PERSON_TOKENS = st.one_of(
     st.sampled_from([f"{form} " for form in _FORMS]),
     st.sampled_from([f"{form} " for form in _CASES]),
     st.sampled_from([f"{form} " for form in _CASES]),
+    st.sampled_from([f"{name} " for name in _ORG_NAMES]),
+    st.sampled_from([f"{pair} " for pair in _ORG_PAIRS]),
+    st.sampled_from([f"{form} " for form in _ORG_FORMS]),
+    st.sampled_from([f"{form} " for form in _ORG_CASES]),
     st.sampled_from(
         [
             "the ", "said ", ". ", ", ", "\n", "'s ", "(", ") ", "Sr. ", "Ms. ", "de ", "x",
@@ -1023,7 +1050,8 @@ _PERSON_PROPERTY = settings(max_examples=300, deadline=None)
 
 
 def _named(*, propagate: bool = True) -> Pseudonymizer:
-    return _people(*_NAMES, propagate=propagate)
+    orgs = dict.fromkeys(_ORG_NAMES, "ORG")
+    return _people(*_NAMES, extra=orgs, propagate=propagate, org_tokens=True)
 
 
 def _starts_upper(text: str) -> bool:
@@ -1073,6 +1101,29 @@ def test_property_no_name_word_of_a_person_is_left_on_its_own(texts: list[str]) 
                     (eligible or _starts_upper(match.group()))
                     and normalize_key(match.group()) == key
                 ), "a name word was left in the output"
+
+
+@_PERSON_PROPERTY
+@given(_PERSON_BATCH)
+def test_property_no_distinctive_word_of_an_organisation_is_left_on_its_own(
+    texts: list[str],
+) -> None:
+    # Capitalised, or in any case when the first organisation that has it writes it capitalised
+    # (slice 19). A word that is also a person's goes to the person, which replaces it too.
+    batch = _named().pseudonymize(texts)
+    written: dict[str, str] = {}
+    for entity in batch.mapping.entities():
+        if entity.entity_type == "ORG":
+            for org_word in org_words(entity.surface, min_length=3):
+                if org_word.kind is OrgWordKind.DISTINCTIVE:
+                    written.setdefault(org_word.key, org_word.word)
+    for key, word in written.items():
+        for text in batch.texts:
+            for match in build_term_pattern(key).finditer(text):
+                assert not (
+                    (_starts_upper(word) or _starts_upper(match.group()))
+                    and normalize_key(match.group()) == key
+                ), "a distinctive word was left in the output"
 
 
 @_PERSON_PROPERTY
@@ -1133,6 +1184,340 @@ def test_words_nobody_detected_are_searched_once_per_text() -> None:
         f"Ticket {index}: Xa{_letters(index)} Yb{_letters(index)} called." for index in range(1000)
     ]
     engine = Pseudonymizer([_RunDetector()], person_tokens=True)
+    started = time.perf_counter()
+    batch = engine.pseudonymize(texts)
+    elapsed = time.perf_counter() - started
+    assert len(batch.mapping) == 1000
+    assert elapsed < 15
+
+
+# Organisation name forms (slice 19) -----------------------------------------------------------
+
+BRIGHTWATER = (
+    "We signed with Brightwater Logistics Ltd, as agreed. Brightwater will send the invoice."
+)
+
+
+def _orgs(*names: str, extra: dict[str, str] | None = None, **kwargs: object) -> Pseudonymizer:
+    """An engine whose fake detector finds the given full names, case-sensitively, as ORG."""
+    words = dict.fromkeys(names, "ORG") | (extra or {})
+    options: dict[str, object] = {"person_tokens": True, "org_tokens": True, **kwargs}
+    return Pseudonymizer([WordListDetector(words)], **options)  # type: ignore[arg-type]
+
+
+def test_a_distinctive_word_of_a_detected_organisation_becomes_its_variant() -> None:
+    batch = _orgs("Brightwater Logistics Ltd").pseudonymize([BRIGHTWATER])
+    assert batch.texts == ("We signed with [ORG_1], as agreed. [ORG_1_B] will send the invoice.",)
+    assert _restored(batch) == [BRIGHTWATER]
+    assert [(e.surface, e.placeholder, e.capitalised) for e in batch.mapping.entities()] == [
+        ("Brightwater Logistics Ltd", "[ORG_1]", False),
+        ("Brightwater", "[ORG_1_B]", False),
+    ]
+
+
+def test_a_spanish_distinctive_word_after_the_generic_word_becomes_a_variant() -> None:
+    text = "Transportes Ventisquero S.L. firmó. Ventisquero enviará la factura."
+    batch = _orgs("Transportes Ventisquero S.L.").pseudonymize([text])
+    assert batch.texts == ("[ORG_1] firmó. [ORG_1_B] enviará la factura.",)
+    assert _restored(batch) == [text]
+
+
+def test_the_name_without_its_legal_form_is_a_variant_of_its_own() -> None:
+    text = "Brightwater Logistics Ltd signed. Brightwater Logistics will pay."
+    batch = _orgs("Brightwater Logistics Ltd").pseudonymize([text])
+    assert batch.texts == ("[ORG_1] signed. [ORG_1_C] will pay.",)
+    # Both forms start at the same place; the word sorts first and propagation gives the range
+    # to the longer surface.
+    assert [(e.surface, e.placeholder, e.capitalised) for e in batch.mapping.entities()] == [
+        ("Brightwater Logistics Ltd", "[ORG_1]", False),
+        ("Brightwater", "[ORG_1_B]", False),
+        ("Brightwater Logistics", "[ORG_1_C]", True),
+    ]
+    assert _restored(batch) == [text]
+
+
+def test_a_distinctive_word_that_is_not_the_first_is_a_variant() -> None:
+    text = "Albarrán y Ledesma S.A. reclama. Ledesma quiere la factura."
+    batch = _orgs("Albarrán y Ledesma S.A.").pseudonymize([text])
+    assert batch.texts == ("[ORG_1] reclama. [ORG_1_B] quiere la factura.",)
+    assert _restored(batch) == [text]
+
+
+@pytest.mark.parametrize(
+    ("full", "text", "key"),
+    [
+        (
+            "Andrews Consulting Inc.",
+            "Andrews Consulting Inc. sent it. Consulting costs rose.",
+            "consulting",
+        ),
+        (
+            "Brightwater Logistics Ltd",
+            "Brightwater Logistics Ltd signed. Ltd means limited.",
+            "ltd",
+        ),
+        ("The Brightwater Company", "The Brightwater Company signed. The invoice is late.", "the"),
+        ("Stone Logistics Ltd", "Stone Logistics Ltd shipped. Stone says it is complete.", "stone"),
+    ],
+    ids=["generic", "legal", "connector", "common"],
+)
+def test_a_generic_word_legal_form_connector_or_common_word_alone_stays(
+    full: str, text: str, key: str
+) -> None:
+    batch = _orgs(full).pseudonymize([text])
+    assert batch.texts == (text.replace(full, "[ORG_1]"),)
+    assert batch.mapping.get(key) is None
+    assert len(batch.mapping) == 1
+
+
+def test_two_organisations_with_the_same_generic_word_keep_their_own_words() -> None:
+    text = (
+        "Welch Logistics LLC and Pitts Logistics Ltd both sent a bid. Welch offered less than "
+        "Pitts. Logistics is a hard business."
+    )
+    batch = _orgs("Welch Logistics LLC", "Pitts Logistics Ltd").pseudonymize([text])
+    assert batch.texts == (
+        "[ORG_1] and [ORG_2] both sent a bid. [ORG_1_B] offered less than [ORG_2_B]. Logistics "
+        "is a hard business.",
+    )
+
+
+def test_a_distinctive_word_of_two_organisations_gets_its_own_number() -> None:
+    text = "Brightwater Logistics Ltd and Brightwater Analytics LLC replied. Brightwater called."
+    batch = _orgs("Brightwater Logistics Ltd", "Brightwater Analytics LLC").pseudonymize([text])
+    assert batch.texts == ("[ORG_1] and [ORG_2] replied. [ORG_3] called.",)
+    # The same when a detector finds the word.
+    detected = _orgs("Brightwater Logistics Ltd", "Brightwater Analytics LLC", "Brightwater")
+    assert detected.pseudonymize([text]).texts == ("[ORG_1] and [ORG_2] replied. [ORG_3] called.",)
+
+
+def test_a_lower_case_distinctive_word_is_replaced_and_restored_as_written() -> None:
+    text = "Brightwater Logistics Ltd confirmed. thanks, brightwater will call."
+    batch = _orgs("Brightwater Logistics Ltd").pseudonymize([text])
+    assert batch.texts == ("[ORG_1] confirmed. thanks, [ORG_1_B] will call.",)
+    assert _restored(batch) == [text]
+
+
+def test_an_organisation_detected_in_lower_case_gives_no_lower_case_replacement() -> None:
+    text = "brightwater logistics ltd confirmed. thanks, brightwater will call. Brightwater did."
+    batch = _orgs("brightwater logistics ltd").pseudonymize([text])
+    assert batch.texts == ("[ORG_1] confirmed. thanks, brightwater will call. [ORG_1_B] did.",)
+    assert batch.mapping.get("brightwater").capitalised  # type: ignore[union-attr]
+
+
+def test_the_name_without_its_legal_form_is_not_replaced_in_lower_case() -> None:
+    text = "Brightwater Logistics Ltd signed. brightwater logistics will pay."
+    batch = _orgs("Brightwater Logistics Ltd").pseudonymize([text])
+    assert batch.texts == ("[ORG_1] signed. [ORG_1_B] logistics will pay.",)
+
+
+def test_a_name_that_is_its_own_bare_name_has_only_its_distinctive_word() -> None:
+    batch = _orgs("Grupo Peñalver").pseudonymize(["Grupo Peñalver firmó. Peñalver paga."])
+    assert batch.texts == ("[ORG_1] firmó. [ORG_1_B] paga.",)
+    assert len(batch.mapping) == 2
+
+
+def test_a_part_of_a_hyphenated_organisation_name_is_not_a_form() -> None:
+    batch = _orgs("Yang-Clark Ltd").pseudonymize(["Yang-Clark Ltd signed. Yang paid."])
+    assert batch.texts == ("[ORG_1] signed. Yang paid.",)
+
+
+VIDAL = "Lucía Vidal works at Vidal Logistics. Vidal will send the quote."
+
+
+@pytest.mark.parametrize("org_tokens", [True, False])
+def test_a_word_of_a_person_and_an_organisation_goes_to_the_person(org_tokens: bool) -> None:
+    engine = _orgs("Vidal Logistics", extra={"Lucía Vidal": "PERSON"}, org_tokens=org_tokens)
+    batch = engine.pseudonymize([VIDAL])
+    assert batch.texts == ("[PERSON_1] works at [ORG_1]. [PERSON_1_B] will send the quote.",)
+
+
+def test_a_word_goes_to_the_person_even_when_the_organisation_comes_first() -> None:
+    text = "Vidal Logistics signed with Lucía Vidal. Vidal will call."
+    batch = _orgs("Vidal Logistics", extra={"Lucía Vidal": "PERSON"}).pseudonymize([text])
+    assert batch.texts == ("[ORG_1] signed with [PERSON_1]. [PERSON_1_B] will call.",)
+    assert batch.mapping.get("vidal").entity_type == "PERSON"  # type: ignore[union-attr]
+
+
+def test_a_word_a_person_gets_later_in_the_walk_is_never_the_organisations() -> None:
+    # The organisation's word is lower-case eligible, the person's is not (a name detected in
+    # lower case), so only the organisation's candidate occurs on its own: it is dropped all the
+    # same, and the person rules of slice 17 leave the lower-case word as written.
+    text = "Vidal Logistics signed with lucía vidal. thanks, vidal will call."
+    batch = _orgs("Vidal Logistics", extra={"lucía vidal": "PERSON"}).pseudonymize([text])
+    assert batch.texts == ("[ORG_1] signed with [PERSON_1]. thanks, vidal will call.",)
+    assert batch.mapping.get("vidal") is None
+
+
+def test_without_a_person_the_word_goes_to_the_organisation() -> None:
+    batch = _orgs("Vidal Logistics Ltd").pseudonymize(
+        ["Vidal Logistics Ltd signed. Vidal will call."]
+    )
+    assert batch.texts == ("[ORG_1] signed. [ORG_1_B] will call.",)
+
+
+def test_a_common_word_is_no_organisation_form_in_any_case() -> None:
+    text = "Banks Logistics Ltd signed. Banks will call; banks are closed."
+    batch = _orgs("Banks Logistics Ltd").pseudonymize([text])
+    assert batch.texts == ("[ORG_1] signed. Banks will call; banks are closed.",)
+    assert batch.mapping.get("banks") is None
+
+
+def test_an_organisation_word_assigned_earlier_stays_an_organisation_when_a_person_has_it() -> None:
+    texts = ["Vidal Logistics Ltd signed. Vidal will call.", "Lucía Vidal called. Vidal again."]
+    batch = _orgs("Vidal Logistics Ltd", extra={"Lucía Vidal": "PERSON"}).pseudonymize(texts)
+    assert batch.texts == (
+        "[ORG_1] signed. [ORG_1_B] will call.",
+        "[PERSON_1] called. [ORG_1_B] again.",
+    )
+    assert batch.mapping.get("vidal").entity_type == "ORG"  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    ("detected", "expected"),
+    [
+        ("Brightwater", "[ORG_1_B]"),
+        ("Brightwater Logistics", "[ORG_1_B]"),
+        ("Brightwater Logistics Limited", "[ORG_1_B]"),
+        ("Logistics", "[ORG_2]"),
+    ],
+    ids=["word", "bare", "other-legal-form", "generic"],
+)
+def test_a_detected_shorter_form_of_an_organisation_links_to_it(
+    detected: str, expected: str
+) -> None:
+    text = f"Brightwater Logistics Ltd signed. {detected} paid."
+    batch = _orgs("Brightwater Logistics Ltd", detected).pseudonymize([text])
+    assert batch.texts == (f"[ORG_1] signed. {expected} paid.",)
+    assert _restored(batch) == [text]
+
+
+def test_a_detected_name_that_shares_only_some_words_does_not_link() -> None:
+    text = "Pacific Marine Ltd signed. Pacific Logistics paid."
+    batch = _orgs("Pacific Marine Ltd", "Pacific Logistics").pseudonymize([text])
+    assert batch.texts == ("[ORG_1] signed. [ORG_2] paid.",)
+
+
+@pytest.mark.parametrize("person_tokens", [True, False])
+def test_a_detected_person_span_never_links_to_an_organisation(person_tokens: bool) -> None:
+    text = "Brightwater Logistics Ltd signed. Brightwater paid."
+    engine = _orgs(
+        "Brightwater Logistics Ltd", extra={"Brightwater": "PERSON"}, person_tokens=person_tokens
+    )
+    assert engine.pseudonymize([text]).texts == ("[ORG_1] signed. [PERSON_1] paid.",)
+
+
+def test_a_form_in_an_earlier_text_is_replaced_once_a_later_text_names_the_organisation() -> None:
+    engine = _orgs("Brightwater Logistics Ltd")
+    texts = ["Brightwater will call.", "Brightwater Logistics Ltd signed."]
+    assert engine.pseudonymize(texts).texts == ("[ORG_1_B] will call.", "[ORG_1] signed.")
+    assert engine.pseudonymize(texts[:1]).texts == ("Brightwater will call.",)
+
+
+def test_without_propagation_only_detected_organisation_forms_are_linked() -> None:
+    batch = _orgs("Brightwater Logistics Ltd", propagate=False).pseudonymize([BRIGHTWATER])
+    assert batch.texts == ("We signed with [ORG_1], as agreed. Brightwater will send the invoice.",)
+    assert len(batch.mapping) == 1
+    detected = _orgs("Brightwater Logistics Ltd", "Brightwater", propagate=False)
+    assert detected.pseudonymize([BRIGHTWATER]).texts == (
+        "We signed with [ORG_1], as agreed. [ORG_1_B] will send the invoice.",
+    )
+
+
+def test_an_allow_listed_distinctive_word_or_bare_name_is_not_replaced() -> None:
+    engine = _orgs("Brightwater Logistics Ltd", allow_list=["brightwater"])
+    assert engine.pseudonymize([BRIGHTWATER]).texts == (
+        "We signed with [ORG_1], as agreed. Brightwater will send the invoice.",
+    )
+    # A bare name made of a common word and a generic word, so that no word of it is a form.
+    text = "Stone Logistics Ltd shipped. Stone Logistics will pay."
+    assert _orgs("Stone Logistics Ltd").pseudonymize([text]).texts == (
+        "[ORG_1] shipped. [ORG_1_B] will pay.",
+    )
+    allowed = _orgs("Stone Logistics Ltd", allow_list=["Stone  Logistics"])
+    assert allowed.pseudonymize([text]).texts == ("[ORG_1] shipped. Stone Logistics will pay.",)
+
+
+def test_an_allow_listed_word_is_no_word_of_a_run() -> None:
+    # Without its allow-listed word, the detected span has the content words of a run that the
+    # organisation does not have.
+    text = "Brightwater Logistics Ltd signed. Pacific Brightwater paid."
+    engine = _orgs("Brightwater Logistics Ltd", "Pacific Brightwater", allow_list=["pacific"])
+    assert engine.pseudonymize([text]).texts == ("[ORG_1] signed. [ORG_1_B] paid.",)
+
+
+def test_a_dictionary_organisations_words_take_letters_after_the_aliases_seen_so_far() -> None:
+    dictionary = DictionaryDetector([Term("Brightwater Logistics Ltd", "ORG", ("BWL",))])
+    engine = Pseudonymizer([dictionary], person_tokens=True, org_tokens=True)
+    texts = [
+        "Brightwater Logistics Ltd wrote. BWL called. Brightwater paid.",
+        "Brightwater Logistics replied.",
+    ]
+    batch = engine.pseudonymize(texts)
+    assert batch.texts == (
+        "[ORG_1] wrote. [ORG_1_B] called. [ORG_1_C] paid.",
+        "[ORG_1_D] replied.",
+    )
+    assert _restored(batch) == texts
+
+
+def test_with_org_tokens_off_the_output_is_that_of_slice_17() -> None:
+    assert _orgs("Brightwater Logistics Ltd", org_tokens=False).pseudonymize(
+        [BRIGHTWATER]
+    ).texts == ("We signed with [ORG_1], as agreed. Brightwater will send the invoice.",)
+    detected = _orgs("Brightwater Logistics Ltd", "Brightwater", org_tokens=False)
+    assert detected.pseudonymize(["Brightwater Logistics Ltd signed. Brightwater paid."]).texts == (
+        "[ORG_1] signed. [ORG_2] paid.",
+    )
+
+
+def test_org_tokens_are_off_by_default() -> None:
+    engine = Pseudonymizer(
+        [WordListDetector({"Brightwater Logistics Ltd": "ORG"})], person_tokens=True
+    )
+    assert engine.pseudonymize([BRIGHTWATER]).texts == (
+        "We signed with [ORG_1], as agreed. Brightwater will send the invoice.",
+    )
+
+
+def test_with_person_tokens_off_only_organisation_words_are_linked() -> None:
+    text = "Alice Johnson works at Brightwater Logistics Ltd. Johnson says Brightwater pays."
+    words = {"Alice Johnson": "PERSON", "Brightwater Logistics Ltd": "ORG"}
+    engine = Pseudonymizer([WordListDetector(words)], org_tokens=True)
+    assert engine.pseudonymize([text]).texts == (
+        "[PERSON_1] works at [ORG_1]. Johnson says [ORG_1_B] pays.",
+    )
+
+
+def test_analyze_reports_undetected_organisation_forms_as_propagation() -> None:
+    spans = _orgs("Brightwater Logistics Ltd").analyze([BRIGHTWATER])[0]
+    assert [(span.start, span.end, span.entity_type, span.source) for span in spans] == [
+        (15, 40, "ORG", "fake"),
+        (53, 64, "ORG", "propagation"),
+    ]
+
+
+class _OrgDetector:
+    """Finds every two-word organisation with `Ltd` made of the letters this test generates."""
+
+    name = "orgs"
+    _PATTERN = re.compile(r"\bXa[a-z]+ Yb[a-z]+ Ltd\b")
+
+    def detect(self, text: str) -> list[Span]:
+        return [
+            Span(match.start(), match.end(), "ORG", 0.9, self.name, PRIORITY_ML)
+            for match in self._PATTERN.finditer(text)
+        ]
+
+
+def test_organisation_words_nobody_detected_are_searched_once_per_text() -> None:
+    # 1,000 texts, each naming a new organisation whose words and bare name never stand alone,
+    # so every candidate stays pending (as the person test above).
+    texts = [
+        f"Ticket {index}: Xa{_letters(index)} Yb{_letters(index)} Ltd called."
+        for index in range(1000)
+    ]
+    engine = Pseudonymizer([_OrgDetector()], org_tokens=True)
     started = time.perf_counter()
     batch = engine.pseudonymize(texts)
     elapsed = time.perf_counter() - started

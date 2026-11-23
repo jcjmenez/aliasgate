@@ -25,13 +25,19 @@ These are known and not fully solved. A deployment must accept or mitigate each 
    The rules recognise only the formats listed in [usage §6.1](usage.md#61-entity-types): an
    identifier written another way, or of another country, is a missed detection too.
    Mitigations: the company dictionary for known terms, a recall-oriented ML threshold,
-   propagation, person name linking, and measuring recall on your own data with the
+   propagation, person and organisation name linking, and measuring recall on your own data with the
    [evaluation harness](evaluation.md). Person name linking replaces the shorter forms of a
    detected name, in lower case too unless the word is a common word, so these are still sent
    as written: a common word that is also a name, written in lower case (`gracias rubio`);
    words shorter than `min_propagation_length`; nicknames and diminutives (`Bob` for
    `Robert`); decomposed or full-width forms of a common word, which the leak audit does not
-   catch either; and the words of a detected name that is written in lower case.
+   catch either; and the words of a detected name that is written in lower case. Organisation
+   name linking replaces the distinctive words of a detected organisation and its name without
+   the legal form, so these are still sent as written: a distinctive word that is a common word
+   (`Stone` for `Stone Logistics Ltd`); acronyms (`GHS` for `Global Harbour Shipping`); the
+   parts of a hyphenated organisation name (`Yang` of `Yang-Clark Ltd`); words shorter than
+   `min_propagation_length`; and, in lower case, the words of an organisation that a detector
+   returns in lower case.
 2. **Identification by context.** Job titles, rare events, small-town references or combinations
    of facts can identify a person without any detectable entity. No mitigation in the gateway.
 3. **Content the gateway cannot read.** Images, audio and file attachments are rejected by
@@ -51,14 +57,18 @@ These are known and not fully solved. A deployment must accept or mitigate each 
    did what: a second person named by a word of an earlier one's name (another `Alice`) gets the
    earlier person's variant. One-word names, name parts and `Don` add such links: `Mr. Smith`
    after `Dr. Smith`, the `Marie` of another person after `Anne-Marie`, and `Don` before
-   another name after the Spanish `Don Juan`, which reads as a first name and a surname. That
-   is a utility loss, not a leak.
+   another name after the Spanish `Don Juan`, which reads as a first name and a surname.
+   Organisation names add two more: in a later message, another organisation that shares a
+   distinctive word with an earlier one gets the earlier one's variant, and a word shared by a
+   person and an organisation goes to the person. That is a utility loss, not a leak.
 7. **Linkability within a request.** The provider can see that `[PERSON_1]` is the same person
    throughout a conversation, and that the placeholders of a dictionary term and its aliases
    are names of one entity (`[ORG_1_B]` is another name of `[ORG_1]`). It also sees which
-   placeholders are shorter forms of one person's name (`[PERSON_1_B]` for `Johnson` next to
-   `[PERSON_1]` for `Alice Johnson`). That is intended, since the model needs it. Which aliases
-   a dictionary holds is not revealed: letters follow the order of appearance in the request.
+   placeholders are shorter forms of one person's or organisation's name (`[PERSON_1_B]` for
+   `Johnson` next to `[PERSON_1]` for `Alice Johnson`, `[ORG_1_B]` for `Brightwater` next to
+   `[ORG_1]` for `Brightwater Logistics Ltd`). That is intended, since the model needs it.
+   Which aliases a dictionary holds is not revealed: letters follow the order of appearance in
+   the request.
 8. **Unresolved or altered placeholders.** A model may invent `[PERSON_9]` or mangle a
    placeholder beyond the tolerant pattern. The user then sees a placeholder. This is a visible
    failure, not a leak; it is counted in metrics.

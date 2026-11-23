@@ -44,6 +44,11 @@ keeps it usable as a library and as a plugin for other gateways.
 | **Name part** | A part of a hyphenated name token that is itself long enough and not a title or a particle (`anne` and `marie` of `anne-marie`). |
 | **Person** | A `PERSON` entity whose surface has at least two name tokens, or one name token together with a title or an initial, or one name token with at least two name parts. |
 | **Common word** | A key in `common_words.COMMON_WORDS`: a word whose lower-case use is common in English or Spanish text. |
+| **Organisation** | An `ORG` entity, whichever detector or dictionary found it. |
+| **Legal form** | A word of an `ORG` surface whose key, with every `.` removed, is in `orgs.LEGAL_FORMS` (`ltd`, `sl`, `inc`). |
+| **Generic word** | A key in `orgs.GENERIC_WORDS`: a word that says what an organisation does or is (`logistics`, `grupo`). |
+| **Distinctive word** | A word of an `ORG` surface that is not a legal form, a connector, a generic word or a common word, and is at least `min_propagation_length` long. |
+| **Bare name** | An organisation's surface from its first to its last content word, as written: its name without the legal form. |
 | **Placeholder** | The replacement text, `[TYPE_N]` or `[TYPE_N_V]`, with `N` starting at 1 per type and `V` the variant letter. |
 | **Mapping** | The per-request table placeholder ↔ canonical surface. |
 | **Slot** | One string inside a JSON payload that the gateway processes, with a way to read and write it. |
@@ -127,7 +132,7 @@ pseudonymised texts in the same order plus the mapping:
 class Pseudonymizer:
     def __init__(self, detectors: Sequence[Detector], *, allow_list: Iterable[str] = (),
                  propagate: bool = True, min_propagation_length: int = 3,
-                 person_tokens: bool = False) -> None: ...
+                 person_tokens: bool = False, org_tokens: bool = False) -> None: ...
     def pseudonymize(self, texts: Sequence[str]) -> PseudonymizedBatch: ...
     def analyze(self, texts: Sequence[str]) -> list[list[Span]]: ...  # spans, not replaced
     @property
@@ -158,10 +163,11 @@ cannot be pickled or copied, and their state cannot be read (security invariant 
 Processing the request as one batch is what makes consistency and determinism possible: the
 numbering depends only on the content and order of the texts.
 
-`person_tokens` turns on the linking of person names (§4.3, steps 2a and 2b). The keyword
-defaults to off, so library callers keep the output they had; `detection.person_tokens`
-defaults to on, and the gateway, `aliasgate check`, `aliasgate demo` and the evaluation harness
-build the engine from the configuration.
+`person_tokens` turns on the linking of person names, and `org_tokens` that of organisation
+names (§4.3, steps 2a and 2b). Both keywords default to off, so library callers keep the output
+they had; `detection.person_tokens` and `detection.org_tokens` default to on, and the gateway,
+`aliasgate check`, `aliasgate demo` and the evaluation harness build the engine from the
+configuration.
 
 ### 4.2 Keys
 
@@ -176,12 +182,12 @@ and the canonical surface are those of the **first** occurrence in batch order. 
 seen. This loss of case variation is accepted and documented.
 
 **Families and link groups.** Surfaces with different keys can name one entity: a dictionary
-term and its aliases, or a person's full name and its shorter forms. Each such surface is still
-its own entity, with its own key, canonical surface and placeholder, but they form a family:
-they share a type and a number and are told apart by a variant letter. The spans of a term and
+term and its aliases, or a person's or an organisation's full name and its shorter forms. Each
+such surface is still its own entity, with its own key, canonical surface and placeholder, but
+they form a family: they share a type and a number and are told apart by a variant letter. The spans of a term and
 its aliases carry the same link, and the mapping records the family of each `(link,
-entity_type)` group. The engine puts the shorter forms of a person's name in the person's
-family with `variant_of` (§4.3):
+entity_type)` group. The engine puts the shorter forms of a person's or an organisation's
+name in its family with `variant_of` (§4.3):
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -238,8 +244,9 @@ Given `texts[0..n)`:
    `(key, entity_type, surface)` and assign it `[TYPE_N]`, where `N` is the next unused number
    for that type, or, for a span with a link, the placeholder the link's group gives it
    (section 4.2). Numbers and variant letters therefore follow the order of first
-   **detection** or, for a name token or name part that nobody detected, the order of its first
-   occurrence on its own once its person exists (step 2b). Propagation (step 3) never influences them.
+   **detection** or, for a name token, name part, distinctive word or bare name that nobody
+   detected, the order of its first occurrence on its own once its person or organisation exists
+   (step 2b). Propagation (step 3) never influences them.
    `LITERAL` spans keep their exact key and ignore links.
 
    With `person_tokens`, this step runs text by text as 2a and 2b. Name tokens come from
@@ -294,8 +301,56 @@ Given `texts[0..n)`:
      `Rose Brown` stays, and a name that a detector returns in lower case gives no lower-case
      replacement.
 
+   With `org_tokens`, steps 2a and 2b also link the shorter forms of organisation names; with
+   `person_tokens` off, only these apply. The words of an `ORG` surface come from
+   `orgs.org_words(surface, min_length=min_propagation_length)`: split the surface on
+   whitespace, strip the punctuation from both ends of each word (`names.unpunctuated`, as for
+   name tokens), take `normalize_key`, and give each word the kind of the first rule that
+   applies: an empty key is other; a key that, with every `.` removed, is in `orgs.LEGAL_FORMS`
+   (34 keys such as `ltd`, `inc`, `gmbh`, `sl`, `sa`, `scoop`) is a **legal form**, so `S.L.`,
+   `S.L` and `SL` are one; a key in `orgs.CONNECTORS` (`names.PARTICLES` and `of`, `the`, `for`,
+   `und`, `et`) or shorter than `min_length` is other; a key in `orgs.GENERIC_WORDS` (210 English
+   and Spanish keys such as `logistics`, `consulting`, `grupo`, `transportes`) is a **generic
+   word**; a key in `COMMON_WORDS` is a common word; any other key is a **distinctive word**.
+   Distinctive, generic and common words are the **content words**, except allow-listed ones.
+   The **bare name** (`orgs.bare_name`) is the surface from its first to its last content word,
+   as written, without the punctuation at the outer ends of those two words, when there are at
+   least two (`Brightwater Logistics` of `Brightwater Logistics Ltd`).
+
+   An **organisation** is any `ORG` entity. Its **forms** are every contiguous run of at least
+   two of its content words, each of its distinctive words as a form of one word, and, in step
+   2b only, its bare name when that key differs from the organisation's and is not on the allow
+   list. A single generic or common word is never a form, so `Logistics costs rose` and `Stone`
+   after `Stone Logistics Ltd` stay as written.
+
+   - **2a for `ORG` spans.** As for persons, and only towards organisations: an unlinked `ORG`
+     span with a new key whose content words are not empty and are one of the forms of the
+     organisations of exactly one family is assigned as a variant of that family. So a detected
+     `Brightwater`, `Brightwater Logistics` or `Brightwater Logistics Limited` after
+     `Brightwater Logistics Ltd` is a variant, a detected `Logistics` gets a number of its own,
+     and `Pacific Logistics` does not link to `Pacific Marine Ltd`. A `PERSON` span never links
+     to an organisation, nor an `ORG` span to a person: detector types never change.
+   - **2b for organisations.** The organisation candidates are the keys of the distinctive words
+     and bare names of every organisation that exists, except keys that already have an entity
+     of any type and keys that are a one-word form of a person that exists. Their written form
+     is the distinctive word as written, without its end punctuation, in the first organisation
+     that has it, or the bare name. A distinctive word is lower-case eligible when its written
+     form starts with an upper-case or title-case letter (a common word is never distinctive); a
+     bare name never is. They occur on their own as person candidates do, and are kept apart
+     from them. All candidates of both kinds that occur on their own are assigned in one order
+     (text index, start, key). An organisation candidate is dropped when a person that exists
+     has its key as a one-word form (**persons first**: `Vidal` next to `Lucía Vidal` and
+     `Vidal Logistics` is the person's); otherwise it is assigned with type `ORG`, the surface
+     of its first occurrence on its own and `capitalised=False` when lower-case eligible,
+     `capitalised=True` otherwise: as a variant of the family when the organisations of exactly
+     one family have it as a distinctive word or bare name, otherwise with a number of its own.
+     So `Brightwater Logistics` alone after `Brightwater Logistics Ltd` creates `[ORG_1_B]` for
+     `Brightwater` and `[ORG_1_C]` for the bare name, at the same start (the word's key sorts
+     first), and propagation, longest surface first, gives the range to `[ORG_1_C]`.
+
    Step 2b depends only on the spans resolved in step 1 and on the texts, never on what
-   propagation claims, so append stability holds. A name token's entity may exist without a
+   propagation claims, so append stability holds: a person that a later text names never
+   changes an organisation variant assigned earlier. A name token's entity may exist without a
    replaced occurrence, when its only occurrence on its own lies inside a longer value that
    propagation replaces first; it is still audited and counted.
 3. **Propagate** (if enabled). For each recorded entity whose key length is at least
@@ -627,6 +682,7 @@ base URLs may carry a base path (§7).
 | Variant placeholders for linked surfaces (`[ORG_1]`, `[ORG_1_B]`), letters by first appearance | One placeholder per entity, restored as its first surface; `[ORG_1B]`; one fixed letter per alias | Each surface restores to itself, so the round trip stays lossless and tool arguments keep the user's wording. `[ORG_1B]` reads as another number. Fixed letters would reveal how many aliases the dictionary holds and break the first-appearance rule. |
 | Shorter forms of a detected person's name become variants of that person, replaced only where they start with an upper-case letter | Case-insensitive matching, or no replacement | Case-insensitive matching turns common words that are also names into placeholders (`la mesa` next to `Pedro Mesa`), and no replacement forwards the shorter forms (`Ms. Johnson`, `Sr. Pérez`). |
 | Lower-case shorter forms are replaced too, unless the word is on a fixed list of common words (slice 17) | Capitalised forms only, every case, or a list of closed-class words only | Capitalised forms only forwards `thanks larry`; every case replaces `and` and `the brown box`; closed-class words only replaces `el repartidor rubio`. A gap in the list over-replaces and never leaks. |
+| The distinctive words of an organisation's name and the name without its legal form become variants; legal forms, connectors, generic words and common words never stand for it alone (slice 19) | Every word, the first distinctive word only, or common words where capitalised | Every word replaces `Logistics` everywhere; the first word only forwards `Ledesma` of `Albarrán y Ledesma S.A.`; capitalised common words replace sentence starts. A gap in the generic list over-replaces and never leaks. |
 | Python | Go or Rust | The detection ecosystem (GLiNER, Presidio, transformers) is Python. Detection dominates latency, not the proxy. |
 | Starlette + httpx | LiteLLM plugin only | Independent correctness; adapter possible later. |
 | Reject unknown endpoints and uninspectable content | Forward unchanged | Fail closed is the only safe default for this product. |

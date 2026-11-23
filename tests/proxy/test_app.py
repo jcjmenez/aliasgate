@@ -586,6 +586,28 @@ async def test_shorter_forms_of_a_name_reach_the_upstream_as_variants_and_come_b
     assert response.headers["x-aliasgate-entities"] == "2"
 
 
+async def test_shorter_forms_of_an_organisation_reach_the_upstream_as_variants_and_come_back(
+    make_client: ClientFactory, upstream: respx.MockRouter, tmp_path: Path
+) -> None:
+    (tmp_path / "orgs.yaml").write_text(
+        "terms:\n  - term: Brightwater Logistics Ltd\n    type: ORG\n", encoding="utf-8"
+    )
+    config = tmp_path / "orgs-config.yaml"
+    config.write_text("detection:\n  dictionary:\n    files: [orgs.yaml]\n", encoding="utf-8")
+    route = upstream.post(CHAT).respond(json=chat_response("[ORG_1_B] and [ORG_1]"))
+    async with make_client(load_settings(config, env={})) as client:
+        response = await client.post(
+            CHAT, json=chat_request("Brightwater Logistics Ltd wrote. Brightwater will call.")
+        )
+    assert response.status_code == 200
+    assert [message["content"] for message in _sent(route)["messages"]] == [
+        "[ORG_1] wrote. [ORG_1_B] will call.",
+    ]
+    assert "Brightwater" not in route.calls.last.request.content.decode()
+    assert _content(response) == "Brightwater and Brightwater Logistics Ltd"
+    assert response.headers["x-aliasgate-entities"] == "2"
+
+
 async def test_a_lower_case_shorter_form_reaches_the_upstream_as_a_variant_and_comes_back(
     make_client: ClientFactory, upstream: respx.MockRouter, tmp_path: Path
 ) -> None:

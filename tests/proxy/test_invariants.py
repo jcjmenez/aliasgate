@@ -329,10 +329,10 @@ async def test_logs_and_metrics_contain_no_text(
     route.respond(json=dialect.reply("Dear [PERSON_1] of [ORG_1], [PERSON_7]"))
     headers = dialect.headers
     await client.post(dialect.path, json=dialect.request(TEXT), headers=headers)
-    # Shorter forms of the dictionary's person become variants (slice 16).
-    shorter = await client.post(
-        dialect.path, json=dialect.request(f"{TEXT} Pérez will call; Juan agrees."), headers=headers
-    )
+    # Shorter forms of the dictionary's person (slice 16) and organisation (slice 19) become
+    # variants.
+    shorter_forms = f"{TEXT} Pérez will call; Juan agrees; ACME pays."
+    shorter = await client.post(dialect.path, json=dialect.request(shorter_forms), headers=headers)
     assert shorter.status_code == 200
     route.respond(200, headers=SSE, content=dialect.stream("Dear [PERSON_1] [PERSON_9]"))
     streaming = dialect.request(TEXT, stream=True)

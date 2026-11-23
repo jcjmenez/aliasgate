@@ -17,6 +17,23 @@ change the configuration or the command line.
   Its baseline in `docs/evaluation.md` shows that when a dictionary finds an organisation's full
   name, every shorter form of it is still forwarded unchanged.
 
+### Changed
+
+- A shorter form of an organisation's name that a detector found (`Brightwater` or
+  `Brightwater Logistics` after `Brightwater Logistics Ltd`) is now a variant of the full name
+  (`[ORG_1_B]`) instead of getting a number of its own, which changes the numbering.
+  `detection.org_tokens: false` (`ALIASGATE_DETECTION__ORG_TOKENS=false`) turns organisation
+  name linking off, and `aliasgate check` prints `org tokens: on` or `off`.
+
+### Fixed
+
+- The shorter forms of a detected organisation's name were forwarded unchanged: each
+  distinctive word standing alone (`Brightwater`, `Ventisquero`, `Ledesma` after
+  `Albarrán y Ledesma S.A.`, in lower case too) and the name without its legal form
+  (`Brightwater Logistics`). Legal forms, connectors, generic words (`Logistics`, `Grupo`) and
+  common words (`Stone`) never stand for an organisation on their own, and a word shared with a
+  person goes to the person.
+
 ## [0.5.0] - 2026-11-23
 
 More forms of a person's name. Lower-case, one-word, hyphenated and `Don` forms that 0.4.0

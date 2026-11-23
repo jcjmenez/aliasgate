@@ -80,7 +80,7 @@ def _words(surface: str, min_length: int) -> list[tuple[str, str, _Kind]]:
     words: list[tuple[str, str, _Kind]] = []
     dons: list[int] = []
     for written in surface.split():
-        start, end = _unpunctuated(written)
+        start, end = unpunctuated(written)
         word = written[start:end]
         key = normalize_key(word)
         undotted = key.removesuffix(".")
@@ -107,7 +107,7 @@ def _words(surface: str, min_length: int) -> list[tuple[str, str, _Kind]]:
     return words
 
 
-def _unpunctuated(word: str) -> tuple[int, int]:
+def unpunctuated(word: str) -> tuple[int, int]:
     """The start and end of the word without the characters of a Unicode punctuation category
     at its ends."""
     start, end = 0, len(word)

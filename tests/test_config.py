@@ -59,6 +59,7 @@ DEFAULTS = {
         "propagate": True,
         "min_propagation_length": 3,
         "person_tokens": True,
+        "org_tokens": True,
     },
     "policy": {
         "unsupported_content": "block",
@@ -164,6 +165,18 @@ def test_person_tokens_can_be_turned_off_in_the_file_and_from_the_environment(
     assert load_settings(path, env=env).detection.person_tokens is True
     env = {"ALIASGATE_DETECTION__PERSON_TOKENS": "false"}
     assert load_settings(None, env=env).detection.person_tokens is False
+
+
+def test_org_tokens_are_on_by_default_and_can_be_set_in_the_file_and_from_the_environment(
+    tmp_path: Path,
+) -> None:
+    assert load_settings(None, env={}).detection.org_tokens is True
+    path = _config(tmp_path, "detection:\n  org_tokens: false\n")
+    assert load_settings(path, env={}).detection.org_tokens is False
+    env = {"ALIASGATE_DETECTION__ORG_TOKENS": "true"}
+    assert load_settings(path, env=env).detection.org_tokens is True
+    env = {"ALIASGATE_DETECTION__ORG_TOKENS": "false"}
+    assert load_settings(None, env=env).detection.org_tokens is False
 
 
 def test_unrelated_environment_variables_are_ignored() -> None:
