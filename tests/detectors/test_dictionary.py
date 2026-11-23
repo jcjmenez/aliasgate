@@ -316,3 +316,10 @@ def test_spans_lie_within_the_text_and_cover_a_term(
     for span in spans:
         assert 0 <= span.start < span.end <= len(text)
         assert normalize_key(text[span.start : span.end]) in keys
+
+
+def test_a_term_is_not_found_before_an_apostrophe_t_that_ends_the_word() -> None:
+    detector = DictionaryDetector([Term("Don", "PERSON"), Term("Can", "ORG")])
+    assert _found(detector, "Don't worry, we can't.") == []
+    assert _found(detector, "Don\u2019t worry.") == []
+    assert _found(detector, "Don's form, Can.") == [("Don", "PERSON"), ("Can", "ORG")]

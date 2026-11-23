@@ -9,9 +9,10 @@ from collections import Counter, abc
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+from aliasgate.common_words import COMMON_WORDS
 from aliasgate.detectors.literal import LiteralDetector
 from aliasgate.mapping import Entity, Mapping, normalize_key
-from aliasgate.names import name_words
+from aliasgate.names import is_person, name_parts, name_words
 from aliasgate.placeholders import TOLERANT, parse_match
 from aliasgate.resolve import resolve_overlaps
 from aliasgate.terms import build_term_pattern, starts_upper
@@ -241,16 +242,19 @@ class _Bounds:
 
 @dataclass(slots=True)
 class _Candidate:
-    """A name token nobody detected, pending until it occurs on its own."""
+    """A name token or name part nobody detected, pending until it occurs on its own."""
 
     key: str
     pattern: re.Pattern[str]
+    lower: bool  # lower-case eligible: it also occurs on its own where it starts in lower case
     searched: int = 0  # texts before this index have been searched
 
 
 class _PersonLinker:
     """Links the shorter forms of a person's name to that person, for one batch (architecture
-    §4.3, steps 2a and 2b). A person is a PERSON entity with at least two name tokens."""
+    §4.3, steps 2a and 2b). A person is a PERSON entity for which `names.is_person` holds; its
+    forms are the contiguous runs of its name tokens and each name part of those tokens, without
+    the allow-listed ones."""
 
     def __init__(
         self,
@@ -266,14 +270,15 @@ class _PersonLinker:
         self._allow_keys = allow_keys
         self._min_length = min_length
         self._first: dict[_Family, Entity] = {}  # in order of assignment
-        # Every contiguous run of the name tokens of a person -> the families of such persons.
+        # Every form of a person (a contiguous run of its name tokens, or one of their name
+        # parts as a form of one word) -> the families of such persons.
         self._runs: dict[tuple[str, ...], set[_Family]] = {}
         self._pending: dict[str, _Candidate] = {}
 
     def assign(self, span: Span, surface: str) -> Entity:
-        """Step 2a: assign a resolved span, as a variant of the one family of persons whose
-        name tokens hold its own as a contiguous run, when it is an unlinked PERSON span with
-        a new key."""
+        """Step 2a: assign a resolved span, as a variant of the one family of persons that have
+        its name tokens as one of their forms, when it is an unlinked PERSON span with a new
+        key."""
         family = None
         if (
             span.entity_type == PERSON
@@ -294,8 +299,8 @@ class _PersonLinker:
         return entity
 
     def find_words(self, index: int) -> None:
-        """Step 2b, after the walk of text `index`: assign every pending name token that occurs
-        on its own in texts 0..index. Each candidate searches each text at most once."""
+        """Step 2b, after the walk of text `index`: assign every pending name token or part that
+        occurs on its own in texts 0..index. Each candidate searches each text at most once."""
         found: list[tuple[int, int, str, str]] = []
         for candidate in list(self._pending.values()):
             if self._mapping.get(candidate.key) is not None:
@@ -308,20 +313,23 @@ class _PersonLinker:
                     break
             candidate.searched = index + 1
         for _, _, key, surface in sorted(found):
-            del self._pending[key]
+            candidate = self._pending.pop(key)
             families = self._runs.get((key,), set())
             variant_of = self._first[next(iter(families))] if len(families) == 1 else None
-            entity = self._mapping.assign(PERSON, surface, variant_of=variant_of, capitalised=True)
+            entity = self._mapping.assign(
+                PERSON, surface, variant_of=variant_of, capitalised=not candidate.lower
+            )
             self._record(entity)
 
     def _occurrence(self, candidate: _Candidate, position: int) -> tuple[int, str] | None:
         """The start and surface of the first match of the candidate on its own in a text:
-        capitalised, with the candidate's key, and outside every span resolved for the text."""
+        capitalised unless the candidate is lower-case eligible, with the candidate's key, and
+        outside every span resolved for the text."""
         bounds = self._bounds[position]
         for match in candidate.pattern.finditer(self._texts[position]):
             surface = match.group()
             if (
-                starts_upper(surface)
+                (candidate.lower or starts_upper(surface))
                 and normalize_key(surface) == candidate.key
                 and not bounds.overlaps(match.start(), match.end())
             ):
@@ -336,19 +344,31 @@ class _PersonLinker:
         )
 
     def _record(self, entity: Entity) -> None:
-        """Note a new entity's family and, for a person, its runs and candidate words."""
+        """Note a new entity's family and, for a person, its forms and candidate words. The
+        allow list removes forms; it never decides whether an entity is a person."""
         family = _family(entity)
         self._first.setdefault(family, entity)
-        words = self._words(entity.surface) if entity.entity_type == PERSON else ()
-        if len(words) < 2:
+        if entity.entity_type != PERSON or not is_person(
+            entity.surface, min_length=self._min_length
+        ):
             return
+        words = self._words(entity.surface)
         keys = tuple(key for key, _ in words)
         for start in range(len(keys)):
             for end in range(start + 1, len(keys) + 1):
                 self._runs.setdefault(keys[start:end], set()).add(family)
-        for key, word in words:
+        parts = [
+            (key, part)
+            for _, word in words
+            for key, part in name_parts(word, min_length=self._min_length)
+            if key not in self._allow_keys
+        ]
+        for key, _ in parts:
+            self._runs.setdefault((key,), set()).add(family)
+        for key, word in (*words, *parts):
             if key not in self._pending and self._mapping.get(key) is None:
-                self._pending[key] = _Candidate(key, build_term_pattern(word))
+                lower = key not in COMMON_WORDS and starts_upper(word)
+                self._pending[key] = _Candidate(key, build_term_pattern(word), lower)
 
 
 def _replace(text: str, occurrences: list[_Occurrence]) -> str:

@@ -111,6 +111,82 @@ corpora, with the dictionary of `persons.yaml` and with the ML layer (same model
   of both languages, so the 280 existing lines of each file and the existing terms of
   `persons.terms.yaml` stay byte for byte as they are.
 
+## Decisions made while implementing
+
+One question was asked on 2026-11-23, and the maintainer chose the recommended option:
+
+1. **The allow list and `is_person`.** "Persons" says that `is_person` holds "with the allow
+   list applied as in slice 16", but `is_person(surface, *, min_length)` takes no allow list.
+   Decision: `is_person` keeps that signature and decides on the surface as detected; the
+   allow list only removes forms (name tokens and name parts) from those that are replaced and
+   linked. So with `jordan` allowed, `Michael` after `Michael Jordan` is replaced, where slice
+   16 left it (a detected name with one name token left after the allow list was no person).
+   Rejected: counting only the tokens and parts that are not allowed, which needed an extra
+   parameter of `is_person` and kept that word as written.
+
+Other choices:
+
+- **The generator keeps new terms where they belong.** The new categories add 120 dictionary
+  terms, and a term of a new category that occurred in an earlier text (`Dr. Holloway` in a
+  `title` example), or an earlier term inside a new text (`Marie Fowler` inside
+  `Anne-Marie Fowler`), would change what the dictionary finds in the earlier examples. For the
+  new categories only, the generator draws again in both cases (`_Corpus.isolated`), so the 14
+  earlier categories give exactly the slice 16 numbers. The generator's `_Example.full_names` is
+  now `terms`, since `single` has no full name; its slots gain `initial_last`, `first_head`,
+  `last_tail`, `don` and the `|capital` modifier; and `_Names.persons` receives the template's
+  forms as `a.form` labels. The header of `persons.terms.yaml` says what a term is now; the
+  entries are pinned, not the header.
+- **The `Don` rule, precisely.** "Without a final `.`" means that the punctuation stripped from
+  the end of the word holds no `.`. With a `min_length` above 3, `Don` is never a name token,
+  so it counts as a title in `is_person`.
+- **`da` is a title.** NFKC turns the title `Dª` into `da`, which is also a particle. The
+  definition of a title is applied as written, so `da Silva` is a person and `Silva` alone is
+  replaced. That over-replaces; it leaks nothing.
+- **Expectations that changed with person tokens on.** In `tests/test_engine.py`: the shorter
+  forms of `ALICE` are now created with `capitalised=False`, because neither word is a common
+  word; `test_a_name_with_a_single_name_token_is_not_a_person` became
+  `test_a_name_with_one_name_token_and_a_title_or_an_initial_is_a_person`, and
+  `test_a_name_word_that_occurs_only_in_lower_case_creates_no_entity` became
+  `test_a_lower_case_shorter_form_is_replaced_and_restored_as_written`, by decisions 2 and 1
+  taken before implementation; the "no residue" property now also covers lower-case eligible words and name parts. In
+  `tests/eval/`: the counts (17 categories, 340 examples), the dictionary order (the new
+  categories are drawn last), and the invariants the spec changes (an initial in `single`, the
+  first name `Don`, `Don't` outside the spans, hyphen parts as name words); the gate test of
+  `word` now also covers `don`. In `tests/test_audit.py`, the reference implementation of the
+  combined search uses the shared boundaries. No pre-existing test matched a term in front of
+  `'t`.
+- **Tests beyond the list.** `Don Juan`, `don Juan`, `Don. Draper` and the minimum length for
+  `Don`; name parts with a dotted title, an empty part and normalised keys; `Don'tcha`,
+  `Juan Pérez't` and `won’t` at the boundary; a detected surname after `Dr. Smith` (2a);
+  `J. R. Smith`; a name detected in lower case; the allow list on a person and on a part; the
+  generator's `Don't` exemption, its hyphen-part check and its isolation check; the content of
+  each new category; the pins of the earlier lines and entries, in the committed files and in
+  the generator's output; and a detected `José Romero` that does not link to
+  `María-José Romero`.
+- **The property generator.** The names of this slice and their shorter forms are drawn by two
+  samplers of their own, so that most batches meet them. Of 2,000 sampled batches, 38% replaced
+  a lower-case occurrence, 35% created an entity first seen in lower case, 31% a variant from a
+  hyphen part, 14% the surname variant of `Dr. Holloway`, 11% held `Don't` next to
+  `Don Draper`, and 8% a `Don` variant. Before the samplers, `Don` and the title name came up
+  in 0.9% and 2.8% of the batches.
+- **Measured.** The four person properties ran with 300 examples each, and once with 20,000,
+  as did the properties of `test_terms.py` and `test_audit.py`. The tests written for main
+  pass against this code, except the four engine cases with person tokens on whose expectation
+  the spec changes and the generator's category list. Each condition of the acceptance
+  checklist was broken on purpose and a test failed: the common-word check, the written-form
+  check of eligibility, lower-case occurrences of eligible words, `capitalised=False` for them,
+  the `and` particle, each condition of the `Don` rule (no final `.`, capitalised, exactly one
+  other name token, the minimum length), the title, the initial and the particle in
+  `is_person`, the two-part condition, the title and particle checks of `name_parts`, parts
+  kept out of runs (both as words of a run and combined with the other words), parts as forms,
+  the allow list on parts, the `'t` boundary of `build_term_pattern` (propagation and 2b), of
+  the dictionary, of the audit's term search and of its key search, and the generator's order.
+- **Numbers.** `docs/evaluation.md` has every table. With the dictionary, the leak rate of the
+  first 280 examples fell from 0.0425 to 0.0303 in English and from 0.0339 to 0.0225 in
+  Spanish; with the ML layer, from 0.0201 to 0.0079 and from 0.0168 to 0.0053, as the prototype
+  measured. Of the 14 earlier categories only `lower` changed, in both runs. The synthetic
+  corpora gave identical output, rules only and with the ML layer.
+
 ## Dependencies to add
 
 None.

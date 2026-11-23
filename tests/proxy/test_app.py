@@ -584,3 +584,22 @@ async def test_shorter_forms_of_a_name_reach_the_upstream_as_variants_and_come_b
     assert "Alice" not in route.calls.last.request.content.decode()
     assert _content(response) == "Alice and Alice Johnson"
     assert response.headers["x-aliasgate-entities"] == "2"
+
+
+async def test_a_lower_case_shorter_form_reaches_the_upstream_as_a_variant_and_comes_back(
+    make_client: ClientFactory, upstream: respx.MockRouter, tmp_path: Path
+) -> None:
+    (tmp_path / "persons.yaml").write_text(
+        "terms:\n  - term: Larry Thompson\n    type: PERSON\n", encoding="utf-8"
+    )
+    config = tmp_path / "persons-config.yaml"
+    config.write_text("detection:\n  dictionary:\n    files: [persons.yaml]\n", encoding="utf-8")
+    route = upstream.post(CHAT).respond(json=chat_response("[PERSON_1_B]"))
+    async with make_client(load_settings(config, env={})) as client:
+        response = await client.post(CHAT, json=chat_request("Larry Thompson wrote. thanks larry"))
+    assert response.status_code == 200
+    assert [message["content"] for message in _sent(route)["messages"]] == [
+        "[PERSON_1] wrote. thanks [PERSON_1_B]",
+    ]
+    assert "larry" not in route.calls.last.request.content.decode().casefold()
+    assert _content(response) == "larry"

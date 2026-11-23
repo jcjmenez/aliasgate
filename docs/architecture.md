@@ -21,7 +21,7 @@ Three layers, with dependencies pointing only downwards:
 
 | Layer | Package | Knows about | Must not know about |
 |---|---|---|---|
-| Core | `aliasgate.types`, `placeholders`, `mapping`, `names`, `resolve`, `engine`, `stream`, `audit`, `detectors.*` | Strings and spans (`audit` walks any JSON value, without knowing its shape) | Provider JSON shapes, HTTP |
+| Core | `aliasgate.types`, `placeholders`, `mapping`, `names`, `common_words`, `terms`, `resolve`, `engine`, `stream`, `audit`, `detectors.*` | Strings and spans (`audit` walks any JSON value, without knowing its shape) | Provider JSON shapes, HTTP |
 | Dialects | `aliasgate.dialects.*` | The JSON shape of one provider API | HTTP, sockets |
 | Proxy | `aliasgate.proxy.*`, `config`, `cli`, `metrics` | HTTP, configuration, wiring | Detection internals |
 | Evaluation | `aliasgate.eval.*` | The core, plus configuration and wiring (`config`, `factory`) to build the engine as the gateway does | HTTP, dialects |
@@ -40,8 +40,10 @@ keeps it usable as a library and as a plugin for other gateways.
 | **Link** | An opaque id a detector puts on spans whose different surfaces name one entity, such as a dictionary term and its aliases (`dictionary:7`). It never contains text. |
 | **Family** | The entities that share a type and a number: an entity and its variants. A link group is one family. |
 | **Variant** | An entity of a family after the first, marked by a letter from `B` to `Z` in its placeholder (`[ORG_1_B]`). |
-| **Name token** | A word of a `PERSON` surface that can name the person on its own: not a title, a particle or an initial (§4.3). |
-| **Person** | A `PERSON` entity whose surface has at least two name tokens. |
+| **Name token** | A word of a `PERSON` surface that can name the person on its own: not a title, a particle or an initial (§4.3). `Don` is a name token only before exactly one other name token. |
+| **Name part** | A part of a hyphenated name token that is itself long enough and not a title or a particle (`anne` and `marie` of `anne-marie`). |
+| **Person** | A `PERSON` entity whose surface has at least two name tokens, or one name token together with a title or an initial, or one name token with at least two name parts. |
+| **Common word** | A key in `common_words.COMMON_WORDS`: a word whose lower-case use is common in English or Spanish text. |
 | **Placeholder** | The replacement text, `[TYPE_N]` or `[TYPE_N_V]`, with `N` starting at 1 per type and `V` the variant letter. |
 | **Mapping** | The per-request table placeholder ↔ canonical surface. |
 | **Slot** | One string inside a JSON payload that the gateway processes, with a way to read and write it. |
@@ -236,8 +238,8 @@ Given `texts[0..n)`:
    `(key, entity_type, surface)` and assign it `[TYPE_N]`, where `N` is the next unused number
    for that type, or, for a span with a link, the placeholder the link's group gives it
    (section 4.2). Numbers and variant letters therefore follow the order of first
-   **detection** or, for a name token that nobody detected, the order of its first occurrence
-   on its own once its person exists (step 2b). Propagation (step 3) never influences them.
+   **detection** or, for a name token or name part that nobody detected, the order of its first
+   occurrence on its own once its person exists (step 2b). Propagation (step 3) never influences them.
    `LITERAL` spans keep their exact key and ignore links.
 
    With `person_tokens`, this step runs text by text as 2a and 2b. Name tokens come from
@@ -245,31 +247,52 @@ Given `texts[0..n)`:
    whitespace, strip the characters of a Unicode punctuation category from both ends of each
    word (an inner apostrophe or hyphen stays), take `normalize_key`, and drop the word if its
    key is empty, a title (`names.TITLES`: `mr`, `ms`, `dr`, `sr`, `sra`, `dña`, `don` and
-   others), a particle (`names.PARTICLES`: `de`, `del`, `la`, `van`, `von` and others), an
-   initial (one letter), or shorter than `min_length`. A token whose key is on the allow list is
-   never a name token. The persons of a family are its entities with at least two name tokens,
-   whether a detector or a dictionary found them.
+   others), a particle (`names.PARTICLES`: `de`, `del`, `la`, `van`, `von`, `and` and others),
+   an initial (one letter), or shorter than `min_length`. One exception: a word whose key is
+   `don`, without a final `.` and starting with an upper-case or title-case letter, is a name
+   token when the other words of the surface give exactly one name token (`Don Draper` gives
+   `don` and `draper`, `Don Juan Pérez` gives `juan` and `pérez`). The **name parts** of a
+   token (`names.name_parts`) are its parts between `-`, U+2010 or U+2011 whose key is at least
+   `min_length` long and is not a title or a particle (`María-José` gives `maría` and `josé`).
+
+   A **person** is a `PERSON` entity for which `names.is_person` holds: at least two name
+   tokens, one name token together with a title or an initial (`Dr. Smith`, `J. Smith`,
+   `Sr. Pérez`), or one name token with at least two name parts (`Anne-Marie`). A particle alone
+   does not make a person (`El cliente`). Whether a detector or a dictionary found it does not
+   matter. The **forms** of a person are every contiguous run of its name tokens (a hyphenated
+   token is one word of a run) and every name part of each token, as a form of one word. A
+   token or part whose key is on the allow list is never a form; the allow list never decides
+   whether an entity is a person. The persons of a family are its entities that are persons.
 
    - **2a. Linking a detected span.** A span is assigned as a variant (`variant_of` the first
      entity of the family, in order of assignment) when its type is `PERSON`, it has no link,
-     its key has no entity yet, its name tokens are not empty, and they form a contiguous run
-     of the name tokens of at least one person that exists at that point of the walk, all such
-     persons belonging to one family. Equal sequences count, so `Dr. Alice Johnson` links to
-     `Alice Johnson`; `Juan García` does not link to `Juan Pérez García`. Any other span is
-     assigned as above, and a dictionary span with a link keeps its group.
+     its key has no entity yet, its name tokens are not empty, and they are one of the forms of
+     at least one person that exists at that point of the walk, all such persons belonging to
+     one family. Equal sequences count, so `Dr. Alice Johnson` links to `Alice Johnson`;
+     `Juan García` does not link to `Juan Pérez García`, and `José Romero` does not link to
+     `María-José Romero`, because a part is not a word of a run. Any other span is assigned as
+     above, and a dictionary span with a link keeps its group.
    - **2b. Words nobody detected** (only with propagation on). After the walk of text `i`, the
-     candidates are the name token keys of every person that exists, except keys that already
-     have an entity of any type. A candidate occurs on its own at a match of
-     `build_term_pattern(word)` in one of the texts `0..i` that starts with an upper-case or
-     title-case letter (`str.isupper` or `str.istitle` of its first character), whose
-     `normalize_key` equals the candidate, and that overlaps no span resolved for that text in
-     step 1. `word` is the token as written, without its end punctuation, in the first person
-     that has it. The candidates that occur on their own are assigned in the order of their
-     first such occurrence (text index, then start, then key), with `capitalised=True` and the
-     surface of that occurrence: as a variant of the family when the persons of exactly one
-     family have the token, otherwise with a number of their own. The others stay pending.
-     Each candidate searches each text at most once: a new candidate searches texts `0..i`,
-     a pending one only each new text, so the work is proportional to candidates × texts.
+     candidates are the keys of the one-word forms (name tokens and name parts) of every person
+     that exists, except keys that already have an entity of any type. `word` is the token or
+     part as written, without its end punctuation, in the first person that has it. A
+     candidate is **lower-case eligible** when its key is not a common word
+     (`common_words.COMMON_WORDS`, a fixed list of 633 English and Spanish keys such as `and`,
+     `para`, `brown` and `rubio`) and `word` starts with an upper-case or title-case letter. A
+     candidate occurs on its own at a match of `build_term_pattern(word)` in one of the texts
+     `0..i` whose `normalize_key` equals the candidate, that overlaps no span resolved for that
+     text in step 1, and that starts with an upper-case or title-case letter (`str.isupper` or
+     `str.istitle` of its first character), unless the candidate is lower-case eligible, which
+     occurs on its own in any case. The candidates that occur on their own are assigned in the
+     order of their first such occurrence (text index, then start, then key), with the surface
+     of that occurrence and `capitalised=False` when lower-case eligible, `capitalised=True`
+     otherwise: as a variant of the family when the persons of exactly one family have the
+     form, otherwise with a number of their own. The others stay pending. Each candidate
+     searches each text at most once: a new candidate searches texts `0..i`, a pending one only
+     each new text, so the work is proportional to candidates × texts. So `thanks larry` after
+     `Larry Thompson` gives `[PERSON_1_B]`, restored as `larry`, while `the brown box` after
+     `Rose Brown` stays, and a name that a detector returns in lower case gives no lower-case
+     replacement.
 
    Step 2b depends only on the spans resolved in step 1 and on the texts, never on what
    propagation claims, so append stability holds. A name token's entity may exist without a
@@ -278,14 +301,19 @@ Given `texts[0..n)`:
 3. **Propagate** (if enabled). For each recorded entity whose key length is at least
    `min_propagation_length`, build a pattern from its canonical surface with
    `build_term_pattern` (`terms.py`): split the surface on whitespace, `re.escape` each token,
-   join with `\s+`, wrap in `(?<!\w)` and `(?!\w)`, compile with `re.IGNORECASE`. Search every
-   text. Each match that does not overlap an already resolved span is added as a span with
-   `source="propagation"`, `priority=20`, `score=1.0`, the entity's type, and a direct reference
-   to the entity (do not re-derive the key from the matched text). Process entities longest
-   canonical surface first, so "Juan Pérez García" wins over "Juan Pérez" where both match, and
-   skip a match that overlaps a propagation span accepted earlier. An entity with `capitalised`
+   join with `\s+`, wrap in `terms.TERM_START` (`(?<!\w)`) and `terms.TERM_END`
+   (`(?!\w|['’]t(?!\w))`), compile with `re.IGNORECASE`. A whole term is thus never followed by a
+   word character, nor by `'t` or `’t` that ends a word, so `Don` does not match in `Don't` and
+   `Can` not in `can't`, while `Don's` and `Don.` still match. The dictionary and both searches
+   of the leak audit (§8) use the same two boundaries. Search every text. Each match that
+   does not overlap an already resolved span is added as a span with `source="propagation"`,
+   `priority=20`, `score=1.0`, the entity's type, and a direct reference to the entity (do not
+   re-derive the key from the matched text). Process entities longest canonical surface
+   first, so "Juan Pérez García" wins over "Juan Pérez" where both match, and skip a match that
+   overlaps a propagation span accepted earlier. An entity with `capitalised`
    keeps only the matches that start with an upper-case or title-case letter, so `la mesa`
-   stays next to `Pedro Mesa`.
+   stays next to `Pedro Mesa`. A lower-case eligible name word has `capitalised=False` and is
+   propagated in every case, like any other entity.
 4. **Replace.** For each text, replace spans from the last to the first so offsets stay valid.
 
 Determinism requirements, each covered by a property test:
@@ -534,7 +562,7 @@ Exceptions are logged by class name only, and the JSON formatter never renders a
 
 | Check | When | On failure |
 |---|---|---|
-| **Outbound leak audit**: for every non-`LITERAL` entity in the mapping whose key length is ≥ `min_propagation_length`, no **string value anywhere in the outbound body** (not only the slots; keys are not checked) contains it, either by the propagation pattern of §4.3 step 3 (word-bounded, case-insensitive) or by its key in the NFKC-normalised, case-folded string; a `capitalised` entity only by a match of the pattern that starts with an upper-case or title-case letter | after the slots are written, before forwarding | reject with 500 `leak_audit_failed`, nothing is forwarded, metric `aliasgate_leak_audit_failures_total` |
+| **Outbound leak audit**: for every non-`LITERAL` entity in the mapping whose key length is ≥ `min_propagation_length`, no **string value anywhere in the outbound body** (not only the slots; keys are not checked) contains it, either by the propagation pattern of §4.3 step 3 (whole-term boundaries, case-insensitive) or by its key, with the same boundaries, in the NFKC-normalised, case-folded string; a `capitalised` entity only by a match of the pattern that starts with an upper-case or title-case letter | after the slots are written, before forwarding | reject with 500 `leak_audit_failed`, nothing is forwarded, metric `aliasgate_leak_audit_failures_total` |
 | **Unresolved placeholders**: tolerant matches in the response not present in the mapping | after restoring | pass through unchanged, metric `aliasgate_unresolved_placeholders_total` |
 
 The audit searches both ways because the two notions of "the same value" differ. The term
@@ -545,13 +573,16 @@ keys differ, such as `İvan` for `Ivan`, and those are reported as well. A combi
 of all entities decides in one pass per string whether anything leaked; each entity is
 searched on its own only to count a failure. The audit is on by default (`policy.leak_audit`).
 
-A `capitalised` entity (a name token that nobody detected, §4.3 step 2b) is found only by its
-term pattern, at a match that starts with an upper-case or title-case letter, as propagation
-replaces it. Its key is not searched in the folded text, which would report the lower-case
-common word that the gateway leaves in place on purpose (`la mesa`). So a decomposed accent or
-full-width letters in such a word are not caught; these words were not entities at all before
-person name linking. The term alternation may include capitalised entities as a pre-filter; the
-key alternation leaves them out, and the per-entity check decides.
+A `capitalised` entity (a common word that is a person's name word nobody detected, §4.3 step
+2b) is found only by its term pattern, at a match that starts with an upper-case or title-case
+letter, as propagation replaces it. Its key is not searched in the folded text, which would
+report the lower-case common word that the gateway leaves in place on purpose (`la mesa`). So a
+decomposed accent or full-width letters in such a word are not caught; these words were not
+entities at all before person name linking. A lower-case eligible name word (`capitalised=False`)
+is audited like any entity, both ways. The term alternation may include capitalised entities as
+a pre-filter; the key alternation leaves them out, and the per-entity check decides. Both
+searches use the whole-term boundaries of §4.3 step 3, so `Don't` is not reported for an
+entity `Don`.
 
 Metrics live in a registry per application and are served at `GET /metrics` when
 `metrics.enabled` (the default), on the gateway's port. Every label value is chosen by the
@@ -595,6 +626,7 @@ base URLs may carry a base path (§7).
 | ASCII `[TYPE_N]` | `<TYPE_N>`, `{{TYPE_N}}`, `⟦TYPE_N⟧` | Angle brackets are stripped by HTML renderers, braces collide with templates, non-ASCII brackets tokenise badly and get normalised by models. |
 | Variant placeholders for linked surfaces (`[ORG_1]`, `[ORG_1_B]`), letters by first appearance | One placeholder per entity, restored as its first surface; `[ORG_1B]`; one fixed letter per alias | Each surface restores to itself, so the round trip stays lossless and tool arguments keep the user's wording. `[ORG_1B]` reads as another number. Fixed letters would reveal how many aliases the dictionary holds and break the first-appearance rule. |
 | Shorter forms of a detected person's name become variants of that person, replaced only where they start with an upper-case letter | Case-insensitive matching, or no replacement | Case-insensitive matching turns common words that are also names into placeholders (`la mesa` next to `Pedro Mesa`), and no replacement forwards the shorter forms (`Ms. Johnson`, `Sr. Pérez`). |
+| Lower-case shorter forms are replaced too, unless the word is on a fixed list of common words (slice 17) | Capitalised forms only, every case, or a list of closed-class words only | Capitalised forms only forwards `thanks larry`; every case replaces `and` and `the brown box`; closed-class words only replaces `el repartidor rubio`. A gap in the list over-replaces and never leaks. |
 | Python | Go or Rust | The detection ecosystem (GLiNER, Presidio, transformers) is Python. Detection dominates latency, not the proxy. |
 | Starlette + httpx | LiteLLM plugin only | Independent correctness; adapter possible later. |
 | Reject unknown endpoints and uninspectable content | Forward unchanged | Fail closed is the only safe default for this product. |

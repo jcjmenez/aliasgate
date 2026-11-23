@@ -7,6 +7,28 @@ change the configuration or the command line.
 
 ## [Unreleased]
 
+### Added
+
+- Three categories in the person corpus (`single`, `hyphen`, `don`, 60 examples per language
+  appended after the existing ones, which are unchanged): a surname after a title or an
+  initial, one part of a hyphenated name, and the English first name `Don` next to `Don't`
+  and the Spanish title.
+
+### Changed
+
+- `Don't`, `can't` and `won't` no longer match the terms `Don`, `Can` and `Won` in
+  propagation, the dictionary and the leak audit: a whole term is never followed by `'t` or
+  `’t` that ends a word. `and` is no longer a name word.
+
+### Fixed
+
+- With person name linking on, these shorter forms of a detected name were forwarded
+  unchanged: a lower-case shorter form (`thanks larry`), unless the word is on a fixed list of
+  633 common English and Spanish words; the surname after a title or an initial (`Holloway`
+  after `Mr. J. R. Holloway`, `Pérez` after `Sr. Pérez`); one part of a hyphenated name
+  (`Anne` for `Anne-Marie Fowler`); and the English first name `Don` (`Don` and `Draper` after
+  `Don Draper`). They are now replaced as variants of the person.
+
 ## [0.4.0] - 2026-11-22
 
 Person name linking. The shorter forms of a detected person's name, which 0.3.0 forwarded
