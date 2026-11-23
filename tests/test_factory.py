@@ -133,6 +133,21 @@ def test_person_tokens_are_passed_through(tmp_path: Path, config: str, expected:
     assert batch.texts == (expected,)
 
 
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ("", "[ORG_1] signed. [ORG_1_B] will call."),
+        ("  org_tokens: true\n", "[ORG_1] signed. [ORG_1_B] will call."),
+        ("  org_tokens: false\n", "[ORG_1] signed. Brightwater will call."),
+    ],
+    ids=["default", "on", "off"],
+)
+def test_org_tokens_are_passed_through(tmp_path: Path, config: str, expected: str) -> None:
+    settings = _settings(tmp_path, config, orgs=_terms(("Brightwater Logistics Ltd", "ORG")))
+    text = "Brightwater Logistics Ltd signed. Brightwater will call."
+    assert build_pseudonymizer(settings).pseudonymize([text]).texts == (expected,)
+
+
 # The ml section alone, for configurations that _settings prefixes with a detection section.
 ML_SECTION = "  ml:\n    enabled: true\n"
 ML_ON = "detection:\n" + ML_SECTION

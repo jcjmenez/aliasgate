@@ -131,6 +131,20 @@ requires, for each language:
 `other`, `sentence` and `org` are measured below, not gated, and neither is the linking of
 `lower`.
 
+`tests/eval/test_org_gate.py` runs the [organisation corpus](#the-organisation-corpus) with
+`tests/eval/corpus/orgs.yaml` (a dictionary of its full names) and the default configuration
+otherwise, so person and organisation name linking are on. It groups the examples by category
+and requires, for each language:
+
+- in `full`, `bare`, `word`, `before`, `multi`, `shared`, `generic` and `lower`: every letter
+  and digit of every `ORG` mention covered by a predicted span, no wrong pair, and
+  `link_recall` of 1.0;
+- in `generic`: no predicted span outside the gold spans, so the generic word on its own stays;
+- no round-trip failure in the whole corpus.
+
+`common` is measured below, not gated: its distinctive word is a common word, which is never an
+organisation form.
+
 ## Your own corpus
 
 A corpus is a JSON Lines file, UTF-8, one example per line:
@@ -709,3 +723,79 @@ What the ML run shows:
   and `generic`.
 - No predicted span covers a generic word on its own. The only predicted spans outside the gold
   spans are 7 `PERSON` spans in English `bare`, the word `contact` in `The contact at …`.
+
+### Organisation corpus with organisation name linking
+
+Measured on 2026-11-23 with the same commands and files, with organisation name linking on
+(slice 19, `detection.org_tokens: true`, the default). The distinctive words of a detected
+organisation and its name without the legal form are now replaced as its variants. With
+`detection.org_tokens: false`, both runs give exactly the numbers of the section above. The
+person corpus and the synthetic corpora give exactly the same output as before, rules only, with
+the dictionary and with the ML layer.
+
+**With the dictionary of full names** (what CI runs). The leak rate fell from 0.2190 to 0.0127
+in English (87 of 6,864 characters) and from 0.2053 to 0.0120 in Spanish (93 of 7,775). All of
+it is the distinctive word of `common` (`Stone`, `Mesa`), a common word, which is never an
+organisation form. Every pair of mentions of one organisation is linked, no pair is wrong, no
+predicted span lies outside the gold spans, and there was no round-trip failure.
+
+| Type | en: gold | en: predicted | en: `recall_overlap` | en: `recall_exact` | en: `precision_exact` | es: gold | es: predicted | es: `recall_overlap` | es: `recall_exact` | es: `precision_exact` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `ORG` (slice 18) | 480 | 260 | 0.542 | 0.542 | 1.000 | 480 | 260 | 0.542 | 0.542 | 1.000 |
+| `ORG` | 480 | 460 | 0.958 | 0.958 | 1.000 | 480 | 460 | 0.958 | 0.958 | 1.000 |
+
+| Type | Language | `mentions` | `placed` | `same_pairs` | `linked` | `wrong` | `link_recall` | `link_precision` |
+|---|---|---|---|---|---|---|---|---|
+| `ORG` (slice 18) | en | 480 | 260 | 40 | 40 | 0 | 1.000 | 1.000 |
+| `ORG` | en | 480 | 460 | 280 | 280 | 0 | 1.000 | 1.000 |
+| `ORG` (slice 18) | es | 480 | 260 | 40 | 40 | 0 | 1.000 | 1.000 |
+| `ORG` | es | 480 | 460 | 280 | 280 | 0 | 1.000 | 1.000 |
+
+**With the ML layer, without the dictionary** (`--types PERSON,ORG`, same model and settings as
+above). The leak rate fell from 0.1809 to 0.0675 in English (463 of 6,864 characters) and from
+0.1651 to 0.0464 in Spanish (361 of 7,775), with no wrong pair and no round-trip failure.
+
+| Type | en: gold | en: predicted | en: `recall_overlap` | en: `recall_exact` | en: `precision_exact` | es: gold | es: predicted | es: `recall_overlap` | es: `recall_exact` | es: `precision_exact` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `ORG` (slice 18) | 480 | 229 | 0.750 | 0.448 | 0.939 | 480 | 253 | 0.698 | 0.473 | 0.897 |
+| `ORG` | 480 | 336 | 0.973 | 0.671 | 0.958 | 480 | 377 | 0.956 | 0.731 | 0.931 |
+| `PERSON` | 0 | 161 | – | – | 0.000 | 0 | 84 | – | – | 0.000 |
+
+| Type | Language | `mentions` | `placed` | `same_pairs` | `linked` | `wrong` | `link_recall` | `link_precision` |
+|---|---|---|---|---|---|---|---|---|
+| `ORG` (slice 18) | en | 480 | 360 | 158 | 85 | 0 | 0.538 | 1.000 |
+| `ORG` | en | 480 | 467 | 286 | 203 | 0 | 0.710 | 1.000 |
+| `ORG` (slice 18) | es | 480 | 335 | 132 | 61 | 0 | 0.462 | 1.000 |
+| `ORG` | es | 480 | 459 | 277 | 199 | 0 | 0.718 | 1.000 |
+
+By category (`placed` of `mentions`, `ORG` characters leaked of gold, and pairs as
+`same_pairs` / `linked` / `wrong`):
+
+| Run | Category | en: placed | en: `ORG` leaked | en: same / linked / wrong | es: placed | es: `ORG` leaked | es: same / linked / wrong |
+|---|---|---|---|---|---|---|---|
+| dictionary | `full` | 80 of 80 | 0 of 1616 | 40 / 40 / 0 | 80 of 80 | 0 of 1966 | 40 / 40 / 0 |
+| dictionary | `bare` | 40 of 40 | 0 of 691 | 20 / 20 / 0 | 40 of 40 | 0 of 819 | 20 / 20 / 0 |
+| dictionary | `word` | 60 of 60 | 0 of 628 | 60 / 60 / 0 | 60 of 60 | 0 of 746 | 60 / 60 / 0 |
+| dictionary | `before` | 40 of 40 | 0 of 584 | 20 / 20 / 0 | 40 of 40 | 0 of 586 | 20 / 20 / 0 |
+| dictionary | `multi` | 60 of 60 | 0 of 863 | 60 / 60 / 0 | 60 of 60 | 0 of 723 | 60 / 60 / 0 |
+| dictionary | `shared` | 80 of 80 | 0 of 1016 | 40 / 40 / 0 | 80 of 80 | 0 of 1195 | 40 / 40 / 0 |
+| dictionary | `generic` | 40 of 40 | 0 of 514 | 20 / 20 / 0 | 40 of 40 | 0 of 589 | 20 / 20 / 0 |
+| dictionary | `lower` | 40 of 40 | 0 of 497 | 20 / 20 / 0 | 40 of 40 | 0 of 601 | 20 / 20 / 0 |
+| dictionary | `common` | 20 of 40 | 87 of 455 | 0 / 0 / 0 | 20 of 40 | 93 of 550 | 0 / 0 / 0 |
+| ML | `full` | 80 of 80 | 0 of 1616 | 40 / 40 / 0 | 80 of 80 | 0 of 1966 | 40 / 40 / 0 |
+| ML | `bare` | 40 of 40 | 0 of 691 | 20 / 17 / 0 | 40 of 40 | 0 of 819 | 20 / 11 / 0 |
+| ML | `word` | 60 of 60 | 15 of 628 | 60 / 38 / 0 | 60 of 60 | 99 of 746 | 60 / 40 / 0 |
+| ML | `before` | 40 of 40 | 163 of 584 | 20 / 15 / 0 | 40 of 40 | 0 of 586 | 20 / 10 / 0 |
+| ML | `multi` | 59 of 60 | 160 of 863 | 58 / 31 / 0 | 58 of 60 | 62 of 723 | 56 / 30 / 0 |
+| ML | `shared` | 80 of 80 | 0 of 1016 | 40 / 30 / 0 | 80 of 80 | 0 of 1195 | 40 / 38 / 0 |
+| ML | `generic` | 40 of 40 | 45 of 514 | 20 / 17 / 0 | 40 of 40 | 111 of 589 | 20 / 14 / 0 |
+| ML | `lower` | 40 of 40 | 14 of 497 | 20 / 14 / 0 | 40 of 40 | 0 of 601 | 20 / 16 / 0 |
+| ML | `common` | 28 of 40 | 66 of 455 | 8 / 1 / 0 | 21 of 40 | 89 of 550 | 1 / 0 / 0 |
+
+What the ML layer still leaves comes from its spans. Where it finds only the surname inside a
+full name, as `PERSON` (`Bonilla` in `Bonilla Marine Corp.`), the rest of the name leaks and
+there is no organisation to link the shorter forms to (English `before` and `multi`). Where it
+leaves the leading generic word out of a Spanish span (`Amorós S.A.` of
+`Servicios Amorós S.A.`), that word leaks next to the placeholder (Spanish `word` and
+`generic`). Shorter forms it labels `PERSON` are replaced but not linked, since detector types
+never change. `common` is unchanged.

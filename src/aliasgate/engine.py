@@ -13,10 +13,11 @@ from aliasgate.common_words import COMMON_WORDS
 from aliasgate.detectors.literal import LiteralDetector
 from aliasgate.mapping import Entity, Mapping, normalize_key
 from aliasgate.names import is_person, name_parts, name_words
+from aliasgate.orgs import OrgWord, OrgWordKind, bare_name, org_words
 from aliasgate.placeholders import TOLERANT, parse_match
 from aliasgate.resolve import resolve_overlaps
 from aliasgate.terms import build_term_pattern, starts_upper
-from aliasgate.types import LITERAL, PERSON, PRIORITY_PROPAGATION, Detector, Span
+from aliasgate.types import LITERAL, ORG, PERSON, PRIORITY_PROPAGATION, Detector, Span
 
 # Literal keys are the exact surface behind a prefix, so that "[PERSON_1]" and "[person_1]"
 # in the input stay two entities and both restore byte for byte (architecture §4.4).
@@ -83,7 +84,8 @@ class Pseudonymizer:
     Deterministic: numbering depends only on the content and order of the texts. Fails
     closed: if any detector fails, `pseudonymize` raises DetectionError and returns nothing.
     With `person_tokens`, the shorter forms of a detected person's name become variants of
-    that person (architecture §4.3).
+    that person, and with `org_tokens` those of a detected organisation's name become variants
+    of that organisation (architecture §4.3).
     """
 
     def __init__(
@@ -94,6 +96,7 @@ class Pseudonymizer:
         propagate: bool = True,
         min_propagation_length: int = 3,
         person_tokens: bool = False,
+        org_tokens: bool = False,
     ) -> None:
         if min_propagation_length < 1:
             raise ValueError("min_propagation_length must be at least 1")
@@ -102,6 +105,7 @@ class Pseudonymizer:
         self._propagate = propagate
         self._min_propagation_length = min_propagation_length
         self._person_tokens = person_tokens
+        self._org_tokens = org_tokens
 
     @property
     def detectors(self) -> tuple[Detector, ...]:
@@ -142,8 +146,16 @@ class Pseudonymizer:
         resolved = [self._detect(text, seconds) for text in batch]
         mapping = Mapping()
         linker = (
-            _PersonLinker(mapping, batch, resolved, self._allow_keys, self._min_propagation_length)
-            if self._person_tokens
+            _NameLinker(
+                mapping,
+                batch,
+                resolved,
+                self._allow_keys,
+                self._min_propagation_length,
+                persons=self._person_tokens,
+                orgs=self._org_tokens,
+            )
+            if self._person_tokens or self._org_tokens
             else None
         )
         occurrences: list[list[_Occurrence]] = []
@@ -242,7 +254,7 @@ class _Bounds:
 
 @dataclass(slots=True)
 class _Candidate:
-    """A name token or name part nobody detected, pending until it occurs on its own."""
+    """A name word, name part or bare name nobody detected, pending until it occurs on its own."""
 
     key: str
     pattern: re.Pattern[str]
@@ -250,11 +262,20 @@ class _Candidate:
     searched: int = 0  # texts before this index have been searched
 
 
-class _PersonLinker:
-    """Links the shorter forms of a person's name to that person, for one batch (architecture
-    §4.3, steps 2a and 2b). A person is a PERSON entity for which `names.is_person` holds; its
-    forms are the contiguous runs of its name tokens and each name part of those tokens, without
-    the allow-listed ones."""
+# The two kinds of candidates of step 2b, in the order they are assigned on a tie.
+_PERSON_WORD, _ORG_WORD = 0, 1
+
+
+class _NameLinker:
+    """Links the shorter forms of a person's or an organisation's name to it, for one batch
+    (architecture §4.3, steps 2a and 2b).
+
+    A person is a PERSON entity for which `names.is_person` holds; its forms are the contiguous
+    runs of its name tokens and each name part of those tokens. An organisation is any ORG
+    entity; its forms are the runs of at least two of its content words and each of its
+    distinctive words, and in step 2b also its bare name. Allow-listed words are never forms.
+    A word that is a one-word form of a person is never an organisation's (persons first).
+    """
 
     def __init__(
         self,
@@ -263,61 +284,74 @@ class _PersonLinker:
         resolved: Sequence[Sequence[Span]],
         allow_keys: frozenset[str],
         min_length: int,
+        *,
+        persons: bool,
+        orgs: bool,
     ) -> None:
         self._mapping = mapping
         self._texts = texts
         self._bounds = [_Bounds(spans) for spans in resolved]
         self._allow_keys = allow_keys
         self._min_length = min_length
+        self._persons = persons
+        self._orgs = orgs
         self._first: dict[_Family, Entity] = {}  # in order of assignment
         # Every form of a person (a contiguous run of its name tokens, or one of their name
         # parts as a form of one word) -> the families of such persons.
         self._runs: dict[tuple[str, ...], set[_Family]] = {}
         self._pending: dict[str, _Candidate] = {}
+        # Every form of an organisation for step 2a (a run of at least two of its content words,
+        # or one of its distinctive words) -> the families of such organisations.
+        self._org_runs: dict[tuple[str, ...], set[_Family]] = {}
+        # The key of every distinctive word and bare name of an organisation -> its families.
+        self._org_names: dict[str, set[_Family]] = {}
+        self._org_pending: dict[str, _Candidate] = {}
 
     def assign(self, span: Span, surface: str) -> Entity:
-        """Step 2a: assign a resolved span, as a variant of the one family of persons that have
-        its name tokens as one of their forms, when it is an unlinked PERSON span with a new
-        key."""
+        """Step 2a: assign a resolved span, as a variant of the one family of persons, or of
+        organisations, that have its words as one of their forms, when it is an unlinked PERSON
+        or ORG span with a new key."""
         family = None
-        if (
-            span.entity_type == PERSON
-            and span.link is None
-            and self._mapping.get(normalize_key(surface)) is None
-        ):
-            keys = tuple(key for key, _ in self._words(surface))
-            families = self._runs.get(keys, set()) if keys else set()
+        if span.link is None and self._mapping.get(normalize_key(surface)) is None:
+            families = self._families(span.entity_type, surface)
             if len(families) == 1:
                 (family,) = families
         known = len(self._mapping)
         if family is None:
             entity = _assign(self._mapping, span, surface)
         else:
-            entity = self._mapping.assign(PERSON, surface, variant_of=self._first[family])
+            entity = self._mapping.assign(span.entity_type, surface, variant_of=self._first[family])
         if len(self._mapping) > known:
             self._record(entity)
         return entity
 
     def find_words(self, index: int) -> None:
-        """Step 2b, after the walk of text `index`: assign every pending name token or part that
-        occurs on its own in texts 0..index. Each candidate searches each text at most once."""
-        found: list[tuple[int, int, str, str]] = []
-        for candidate in list(self._pending.values()):
-            if self._mapping.get(candidate.key) is not None:
-                del self._pending[candidate.key]
-                continue
-            for position in range(candidate.searched, index + 1):
-                occurrence = self._occurrence(candidate, position)
-                if occurrence is not None:
-                    found.append((position, occurrence[0], candidate.key, occurrence[1]))
-                    break
-            candidate.searched = index + 1
-        for _, _, key, surface in sorted(found):
-            candidate = self._pending.pop(key)
-            families = self._runs.get((key,), set())
+        """Step 2b, after the walk of text `index`: assign every pending candidate that occurs on
+        its own in texts 0..index. Each candidate searches each text at most once."""
+        found: list[tuple[int, int, str, int, str]] = []
+        for kind, pending in ((_PERSON_WORD, self._pending), (_ORG_WORD, self._org_pending)):
+            for candidate in list(pending.values()):
+                if self._mapping.get(candidate.key) is not None:
+                    del pending[candidate.key]
+                    continue
+                for position in range(candidate.searched, index + 1):
+                    occurrence = self._occurrence(candidate, position)
+                    if occurrence is not None:
+                        found.append((position, occurrence[0], candidate.key, kind, occurrence[1]))
+                        break
+                candidate.searched = index + 1
+        for _, _, key, kind, surface in sorted(found):
+            if kind == _PERSON_WORD:
+                candidate = self._pending.pop(key)
+                entity_type, families = PERSON, self._runs.get((key,), set())
+            else:
+                candidate = self._org_pending.pop(key)
+                if (key,) in self._runs:
+                    continue  # a person has the word: persons first
+                entity_type, families = ORG, self._org_names[key]
             variant_of = self._first[next(iter(families))] if len(families) == 1 else None
             entity = self._mapping.assign(
-                PERSON, surface, variant_of=variant_of, capitalised=not candidate.lower
+                entity_type, surface, variant_of=variant_of, capitalised=not candidate.lower
             )
             self._record(entity)
 
@@ -336,6 +370,15 @@ class _PersonLinker:
                 return match.start(), surface
         return None
 
+    def _families(self, entity_type: str, surface: str) -> set[_Family]:
+        """The families of the persons, or organisations, that have the words of a PERSON, or
+        ORG, surface as one of their forms."""
+        if entity_type == PERSON and self._persons:
+            return self._runs.get(tuple(key for key, _ in self._words(surface)), set())
+        if entity_type == ORG and self._orgs:
+            return self._org_runs.get(tuple(word.key for word in self._content(surface)), set())
+        return set()
+
     def _words(self, surface: str) -> tuple[tuple[str, str], ...]:
         return tuple(
             (key, word)
@@ -343,14 +386,27 @@ class _PersonLinker:
             if key not in self._allow_keys
         )
 
+    def _content(self, surface: str) -> list[OrgWord]:
+        """The content words of an ORG surface, without the allow-listed ones."""
+        return [
+            word
+            for word in org_words(surface, min_length=self._min_length)
+            if word.content and word.key not in self._allow_keys
+        ]
+
     def _record(self, entity: Entity) -> None:
-        """Note a new entity's family and, for a person, its forms and candidate words. The
-        allow list removes forms; it never decides whether an entity is a person."""
+        """Note a new entity's family and, for a person or an organisation, its forms and
+        candidates. The allow list removes forms; it never decides whether an entity is a
+        person."""
         family = _family(entity)
         self._first.setdefault(family, entity)
-        if entity.entity_type != PERSON or not is_person(
-            entity.surface, min_length=self._min_length
-        ):
+        if entity.entity_type == PERSON and self._persons:
+            self._record_person(entity, family)
+        elif entity.entity_type == ORG and self._orgs:
+            self._record_org(entity, family)
+
+    def _record_person(self, entity: Entity, family: _Family) -> None:
+        if not is_person(entity.surface, min_length=self._min_length):
             return
         words = self._words(entity.surface)
         keys = tuple(key for key, _ in words)
@@ -369,6 +425,33 @@ class _PersonLinker:
             if key not in self._pending and self._mapping.get(key) is None:
                 lower = key not in COMMON_WORDS and starts_upper(word)
                 self._pending[key] = _Candidate(key, build_term_pattern(word), lower)
+
+    def _record_org(self, entity: Entity, family: _Family) -> None:
+        content = self._content(entity.surface)
+        keys = tuple(word.key for word in content)
+        for start in range(len(keys)):
+            for end in range(start + 2, len(keys) + 1):
+                self._org_runs.setdefault(keys[start:end], set()).add(family)
+        # Each distinctive word and the bare name, as written, and whether it is lower-case
+        # eligible.
+        names = [
+            (word.key, word.word, starts_upper(word.word))
+            for word in content
+            if word.kind is OrgWordKind.DISTINCTIVE
+        ]
+        for key, _, _ in names:
+            self._org_runs.setdefault((key,), set()).add(family)
+        bare = bare_name(entity.surface, min_length=self._min_length)
+        if bare is not None and normalize_key(bare) not in {entity.key, *self._allow_keys}:
+            names.append((normalize_key(bare), bare, False))
+        for key, written, lower in names:
+            self._org_names.setdefault(key, set()).add(family)
+            if (
+                key not in self._org_pending
+                and self._mapping.get(key) is None
+                and (key,) not in self._runs
+            ):
+                self._org_pending[key] = _Candidate(key, build_term_pattern(written), lower)
 
 
 def _replace(text: str, occurrences: list[_Occurrence]) -> str:

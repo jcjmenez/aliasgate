@@ -87,6 +87,7 @@ listen: 127.0.0.1 port 8080
 policy: unsupported_content=block, strip_user_identifiers=on, tool_definitions=on, leak_audit=on
 propagation: on
 person tokens: on
+org tokens: on
 metrics: on
 ```
 
@@ -432,6 +433,39 @@ Set `detection.person_tokens: false` (or `ALIASGATE_DETECTION__PERSON_TOKENS=fal
 off: shorter forms are then replaced only where a detector finds them, with a number of their
 own.
 
+With `detection.org_tokens` (on by default), the shorter forms of a detected organisation's name
+are protected in the same way. Once a full name such as `Brightwater Logistics Ltd` or
+`Transportes Ventisquero S.L.` is detected, each distinctive word of it that stands alone
+elsewhere in the request (`Brightwater`, `Ventisquero`, `Ledesma` after
+`Albarrán y Ledesma S.A.`) and the name without its legal form (`Brightwater Logistics`,
+`Transportes Ventisquero`) are replaced as variants of that organisation (`[ORG_1_B]`,
+`[ORG_1_C]`), and each is restored as written. A shorter form that a detector found (a
+distinctive word, or a run of the name's words) also becomes a variant instead of getting a
+number of its own.
+
+- It needs a detected organisation: any `ORG` value, found by the dictionary or by the ML
+  layer.
+- A distinctive word is a word of the name that is not a legal form (`Ltd`, `Inc.`, `GmbH`,
+  `S.L.`, `S.A.`, compared without their dots, 34 in all), a connector (`and`, `y`, `of`, `the`,
+  `de` and the other particles above), a generic word (`Logistics`, `Consulting`, `Grupo`,
+  `Transportes`, from a fixed list of 210 English and Spanish words) or a common word (the list
+  above), and that is at least `min_propagation_length` characters long. So
+  `Logistics costs rose` stays as written, and so does `Stone` after `Stone Logistics Ltd`. A
+  generic word missing from the list counts as distinctive, so it is replaced on its own, in
+  lower case too (`widgets` after `Acme Widgets Ltd`): that over-replaces and never leaks.
+- A distinctive word is replaced in lower case too (`thanks, brightwater`) when the
+  organisation's name writes it with an upper-case letter. The name without its legal form is
+  replaced only where it starts with an upper-case letter.
+- A distinctive word that two organisations of the request share (`Brightwater` for
+  `Brightwater Logistics Ltd` and `Brightwater Analytics LLC`) gets a number of its own, and a
+  word that a person and an organisation share goes to the person (`Vidal` next to
+  `Lucía Vidal` and `Vidal Logistics`).
+- As for persons, words nobody detected need `propagate: true`, and allow-listed words and names
+  are never replaced. Acronyms (`GHS`) and the parts of a hyphenated name (`Yang` of
+  `Yang-Clark Ltd`) are not forms.
+
+Set `detection.org_tokens: false` (or `ALIASGATE_DETECTION__ORG_TOKENS=false`) to turn it off.
+
 ## 7. What your users will notice
 
 - **Placeholders in reasoning.** Anthropic `thinking` and `redacted_thinking` blocks are signed
@@ -460,8 +494,18 @@ own.
     `larry said`);
   - in a later message, a different person who shares a word with an earlier one (another
     `Alice`) gets the earlier person's variant, because earlier placeholders never change;
-  - an organisation named after a person (`Vidal Logistics` next to `Lucía Vidal`) may show
-    that person's variant for the shared word.
+  - a word shared by a person and an organisation goes to the person: `Vidal` next to
+    `Lucía Vidal` and `Vidal Logistics` is the person's variant, also where it names the
+    organisation.
+- **Shorter forms of an organisation are linked.** With `org_tokens` on (section 6.3),
+  `Brightwater` and `Brightwater Logistics` after `Brightwater Logistics Ltd` reach the model as
+  `[ORG_1_B]` and `[ORG_1_C]`, and each is restored as written. Some effects to expect:
+  - a capitalised distinctive word elsewhere is replaced too, for example at the start of a
+    sentence, and a generic word missing from the list counts as distinctive;
+  - a distinctive word that is also a common word (`Stone` for `Stone Logistics Ltd`) is left as
+    written;
+  - in a later message, another organisation that shares a distinctive word with an earlier one
+    gets the earlier one's variant for that word.
 - **Tasks that degrade.** Anything that depends on the real value: guessing gender or origin
   from a name, arithmetic on a masked number, facts about a real company, provider-side tools
   such as hosted web search, which only see placeholders. Models sometimes comment on the

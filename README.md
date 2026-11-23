@@ -104,7 +104,7 @@ regulation. Read the [threat model](https://github.com/jcjmenez/aliasgate/blob/m
 | 16 | Person name tokens and linking (entity linking, part 3) | done |
 | 17 | Lower-case, one-word, hyphenated and `Don` person forms (entity linking, part 4) | done |
 | 18 | Organisation mentions evaluation set (entity linking, part 5) | done |
-| 19 | Organisation name forms and linking (entity linking, part 6) | planned |
+| 19 | Organisation name forms and linking (entity linking, part 6) | done |
 
 ## Development
 

@@ -117,6 +117,95 @@ so slice 18's corpus gives other numbers):
   counts as leaked in part. It also labels a bare distinctive word `PERSON` (`Lewis`, `Zurita`),
   which is replaced as a person of its own: no leak, a missed link.
 
+## Decisions made while implementing
+
+No question was asked: the slice file left nothing open that could change what reaches the
+provider. Where it was silent:
+
+- **With `person_tokens` off**, no person forms are recorded, so "persons first" never drops an
+  organisation candidate: only the organisation forms apply, as the file says. The word then
+  goes to the organisation, which replaces it; nothing leaks.
+- **Persons first is checked twice**, as written: a candidate is not created for a key that is
+  already a one-word form of a person, and a pending one is dropped when it is assigned, if a
+  person has the key by then (a person named after the organisation in the same or a later
+  text). Person candidates are those of slice 17, in their own pool; on a tie of text, start and
+  key, the person candidate comes first, which changes nothing since the organisation one is
+  then dropped.
+- **The linker** (`engine._PersonLinker`, private) is now `engine._NameLinker` and handles both
+  types; the person code paths are unchanged. `orgs.OrgWord` has one more read-only property,
+  `content`, true for distinctive, generic and common words, which the engine uses.
+- **An allow-listed bare name** is not a form, but its distinctive words still are: with
+  `Brightwater Logistics` allowed, `Brightwater Logistics` alone after the full name gives
+  `[ORG_1_B] Logistics`. The test of the allow list uses `Stone Logistics Ltd`, whose bare name
+  has no distinctive word, so that the allow-listed bare name stays whole.
+- **Tests beyond the list.** A name that is its own bare name (`Grupo Peñalver`), a part of a
+  hyphenated name (`Yang` of `Yang-Clark Ltd`) left as written, the organisation detected before
+  the person in one text, a person named in lower case after the organisation (persons first
+  at assignment), an allow-listed word removed from a detected run, `analyze` reporting
+  undetected forms as propagation, the type check of 2a with `person_tokens` off, a word of two
+  organisations found by a detector, and the proxy route of `Brightwater` with a dictionary term.
+  `test_orgs.py` also checks the written form of each word, the bare name's inner whitespace and
+  punctuation, an empty word, `Co.` and `GmbH`, and that every key of `COMMON_WORDS` outside the
+  other lists is `COMMON`.
+- **Property generator.** The four properties of slices 16 and 17 now draw, next to the persons,
+  eleven organisations of both language shapes (two sharing a distinctive word, two sharing a
+  generic word, one whose word is a common word, two sharing a word with a person), their
+  distinctive words, bare names, generic words and legal forms alone, the same in random case,
+  and five pairs drawn together (`Alice Johnson at Johnson Freight PLC`). A fifth property checks
+  that no distinctive word of an organisation is left on its own. A probe of 2,000 batches found
+  an organisation in 76% of them, a distinctive-word variant in 14.6%, a bare-name variant in
+  4.2%, a lower-case variant in 2.4%, a word with a number of its own in 2.7%, persons first (a
+  word of both a person and an organisation replaced as the person) in 8.6%, and an organisation
+  word that stays `ORG` when a person with that word comes later in 1.0%. Without the pairs,
+  persons first was reached in none of 2,000 batches.
+  Each of the five properties also ran once with 20,000 examples and passed.
+- **Expectations that changed** with the configuration default (on): only the defaults of
+  `tests/test_config.py`, which now include `org_tokens`. Every other test of `main` passes
+  unchanged against this code (tests that read files outside `tests/` were run in place). The
+  logging invariant test sends `ACME pays.` too, a shorter form of its dictionary's organisation.
+- **Mutation checks.** Each condition of the checklist was broken on purpose and a test failed:
+  each word list (legal forms, connectors, generic words, common words), the dot removal, the
+  minimum length, runs of at least two words, the bare name's two content words, its outer
+  punctuation and its allow list, lower-case eligibility from the written form, bare names never
+  eligible, persons first, the type check of 2a for both types, the exactly-one-family rule in
+  2a and 2b, the allow list of content words, distinctive words only as one-word forms, the
+  three switches (`org_tokens` and `person_tokens` off, the engine flag) and the configuration
+  default, factory and `check` line (28 mutants). Persons first survived at first: the person
+  candidate wins every tie, and assigning a known key returns its entity, so only a person whose
+  word is not lower-case eligible (a name detected in lower case) after the organisation in the
+  walk shows the rule; a test now covers it. Two mutants are equivalent: dropping the bare
+  name's "key different from the organisation's" (that key always has an entity, the
+  organisation itself) and dropping "the key has no entity" when a candidate is created (step 2b
+  deletes such candidates before searching). The slice file states both conditions, so the code
+  keeps them.
+
+**Measured** (2026-11-23, same model and library versions as slice 18). With
+`detection.org_tokens: false`, both organisation runs give exactly slice 18's numbers. With it on,
+the synthetic corpora (rules only, and ML with `--types PERSON,ORG,ADDRESS`) and the person corpus
+(dictionary and ML) give byte-identical JSON output, misses and wrong merges included.
+
+| Run | en leak, slice 18 → 19 | es leak, slice 18 → 19 | en linked / same | es linked / same | wrong |
+|---|---|---|---|---|---|
+| dictionary | 0.2190 → 0.0127 | 0.2053 → 0.0120 | 280 / 280 | 280 / 280 | 0 |
+| ML | 0.1809 → 0.0675 | 0.1651 → 0.0464 | 203 / 286 | 199 / 277 | 0 |
+
+Leak rate per category, slice 18 → slice 19:
+
+| Category | en, dictionary | es, dictionary | en, ML | es, ML |
+|---|---|---|---|---|
+| `full` | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 |
+| `bare` | 0.4342 → 0 | 0.4164 → 0 | 0.3444 → 0 | 0.2222 → 0 |
+| `word` | 0.3694 → 0 | 0.3458 → 0 | 0.1608 → 0.0239 | 0.2882 → 0.1327 |
+| `before` | 0.2449 → 0 | 0.2167 → 0 | 0.3253 → 0.2791 | 0.1109 → 0 |
+| `multi` | 0.3024 → 0 | 0.3651 → 0 | 0.2966 → 0.1854 | 0.2531 → 0.0858 |
+| `shared` | 0.2402 → 0 | 0.2192 → 0 | 0.1732 → 0 | 0.2092 → 0 |
+| `generic` | 0.2335 → 0 | 0.2054 → 0 | 0.2510 → 0.0875 | 0.3328 → 0.1885 |
+| `lower` | 0.2334 → 0 | 0.2163 → 0 | 0.1730 → 0.0282 | 0.1730 → 0 |
+| `common` | 0.1912 → 0.1912 | 0.1691 → 0.1691 | 0.1451 → 0.1451 | 0.1618 → 0.1618 |
+| all | 0.2190 → 0.0127 | 0.2053 → 0.0120 | 0.1809 → 0.0675 | 0.1651 → 0.0464 |
+
+The per-category counts (placed, leaked characters, pairs) are in `docs/evaluation.md`.
+
 ## Dependencies to add
 
 None.

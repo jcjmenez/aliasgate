@@ -30,7 +30,7 @@ Read [AGENTS.md](../../AGENTS.md) first. Its rules apply to every slice.
 | 16 | [slice-16-person-tokens.md](slice-16-person-tokens.md) | Person name tokens and linking | 15 | done |
 | 17 | [slice-17-person-forms.md](slice-17-person-forms.md) | Lower-case, one-word, hyphenated and `Don` person forms | 16 | done |
 | 18 | [slice-18-org-evaluation.md](slice-18-org-evaluation.md) | Organisation mentions evaluation set | 17 | done |
-| 19 | [slice-19-org-forms.md](slice-19-org-forms.md) | Organisation name forms and linking | 18 | planned |
+| 19 | [slice-19-org-forms.md](slice-19-org-forms.md) | Organisation name forms and linking | 18 | done |
 
 Slices 02 and 03 can be done in either order. Slices 09 and 11 can be done any time after 04.
 The first usable end-to-end product exists after slice 06; the first one worth deploying, after

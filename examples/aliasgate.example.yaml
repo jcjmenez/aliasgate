@@ -64,6 +64,8 @@ detection:
   propagate: true            # replace other occurrences of detected values too
   person_tokens: true        # "Johnson" or "Sr. Pérez" alone becomes a variant of a detected
                              # full name ([PERSON_1_B]), where it starts upper-case
+  org_tokens: true           # "Brightwater" or "Brightwater Logistics" alone becomes a variant
+                             # of a detected "Brightwater Logistics Ltd" ([ORG_1_B])
   min_propagation_length: 3
 
 policy:
