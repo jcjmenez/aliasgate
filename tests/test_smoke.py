@@ -2,4 +2,4 @@ import aliasgate
 
 
 def test_package_exposes_version() -> None:
-    assert aliasgate.__version__ == "0.4.0"
+    assert aliasgate.__version__ == "0.5.0"
