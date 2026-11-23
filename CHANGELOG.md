@@ -7,6 +7,12 @@ change the configuration or the command line.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-23
+
+More forms of a person's name. Lower-case, one-word, hyphenated and `Don` forms that 0.4.0
+forwarded unchanged are replaced as variants of the person, and `Don't` no longer matches the
+term `Don`.
+
 ### Added
 
 - Three categories in the person corpus (`single`, `hyphen`, `don`, 60 examples per language
@@ -138,7 +144,8 @@ it has not run in production yet. Read the threat model before relying on it.
   offline), non-root, with no configuration inside.
 - Documentation: usage, deployment, architecture, threat model, evaluation.
 
-[Unreleased]: https://github.com/jcjmenez/aliasgate/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jcjmenez/aliasgate/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jcjmenez/aliasgate/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jcjmenez/aliasgate/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jcjmenez/aliasgate/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jcjmenez/aliasgate/compare/v0.1.0...v0.2.0
