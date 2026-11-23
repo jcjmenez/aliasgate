@@ -43,6 +43,20 @@ from 0.0425 to 0.0303 in English and from 0.0339 to 0.0225 in Spanish, with the 
 unchanged. Still open after it: nicknames, diminutives, transliterations, common words that are
 also names written in lower case, and linking the words of other types.
 
+**Cut into [slice 18](slice-18-org-evaluation.md) and [slice 19](slice-19-org-forms.md).**
+Organisation names. With a company dictionary, the shorter forms of a term without aliases
+(`Brightwater` and `Brightwater Logistics` after `Brightwater Logistics Ltd`) are forwarded
+unchanged, and the leak audit cannot see them. The ML model finds most single words, but gives
+them a number of their own or the type `PERSON`. Slice 18 adds an organisation corpus with gold
+entity ids. Slice 19 replaces and links the distinctive words of a detected organisation and its
+name without the legal form; legal forms, connectors, generic words (a fixed list) and common
+words never stand for it alone, and a word shared with a person goes to the person. A prototype
+measured the leak rate of a corpus like slice 18's falling from 0.2486 to 0.0146 in English and
+from 0.2303 to 0.0138 in Spanish with a dictionary, and from 0.2039 to 0.0733 and from 0.1908 to
+0.0507 with the ML layer, with no wrong merge and the person and synthetic corpora unchanged.
+Still open after them: nicknames, diminutives, transliterations, common words that are also
+names written in lower case, acronyms, and the words of other types (`ADDRESS`, `PROJECT`).
+
 ## 2. Realistic surrogates, opt-in per entity type
 
 **Problem.** Placeholders reduce answer quality on some tasks (state of the art §5).
