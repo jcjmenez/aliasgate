@@ -2,6 +2,11 @@
 form."""
 
 import pytest
+
+import generate_org_corpus
+from aliasgate.common_words import COMMON_WORDS
+from aliasgate.mapping import normalize_key
+from aliasgate.names import PARTICLES
 from aliasgate.orgs import (
     CONNECTORS,
     GENERIC_WORDS,
@@ -11,11 +16,6 @@ from aliasgate.orgs import (
     bare_name,
     org_words,
 )
-
-import generate_org_corpus
-from aliasgate.common_words import COMMON_WORDS
-from aliasgate.mapping import normalize_key
-from aliasgate.names import PARTICLES
 
 D, G, C, L, X = (  # X: other
     OrgWordKind.DISTINCTIVE,
