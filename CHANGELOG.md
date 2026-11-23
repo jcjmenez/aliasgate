@@ -7,6 +7,16 @@ change the configuration or the command line.
 
 ## [Unreleased]
 
+### Added
+
+- An organisation mentions corpus for the evaluation harness (`tests/eval/corpus/orgs.*.jsonl`,
+  180 examples per language in 9 categories, written by `tools/generate_org_corpus.py`, with a
+  dictionary of its full names loaded by `orgs.yaml`): full names with their legal form, the
+  name without it, distinctive words alone and in lower case, two organisations with the same
+  generic word, a generic word on its own, and a distinctive word that is also a common word.
+  Its baseline in `docs/evaluation.md` shows that when a dictionary finds an organisation's full
+  name, every shorter form of it is still forwarded unchanged.
+
 ## [0.5.0] - 2026-11-23
 
 More forms of a person's name. Lower-case, one-word, hyphenated and `Don` forms that 0.4.0

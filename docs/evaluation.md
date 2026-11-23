@@ -267,6 +267,73 @@ uv run python tools/generate_person_corpus.py
 uv run python tools/generate_person_corpus.py --check
 ```
 
+## The organisation corpus
+
+`tests/eval/corpus/orgs.en.jsonl` and `orgs.es.jsonl` measure the shorter forms of
+organisation names: the name without its legal form, one distinctive word, the same word in
+lower case. Each holds 180 examples, 20 in each of 9 categories, written by
+`tools/generate_org_corpus.py` from two hand-written templates per category and language
+(tickets, emails, CRM notes, chat messages). Example ids are `{lang}-{category}-{nnn}`. Every
+mention of an organisation is an `ORG` span with the organisation's id (`o1`, `o2`, in order of
+first mention). A span covers the name as written: the full name with its legal form and its
+final `.` (`Transportes Ventisquero S.L.`), the name without its legal form
+(`Brightwater Logistics`), or one distinctive word (`Brightwater`). Punctuation after the name
+and a possessive `'s` stay outside the span, and a generic word on its own
+(`Logistics costs rose`) is not a span. No example names a person.
+
+An organisation has one distinctive word, one generic word and one legal form, in the order of
+its language (`Brightwater Logistics Ltd`, `Transportes Ventisquero S.L.`), except in `multi`,
+where it has several distinctive words and no generic word (`Hale, Mercer and Quill LLP`,
+`Albarrán y Ledesma S.A.`).
+
+| Category | What its examples contain |
+|---|---|
+| `full` | Two organisations, each named twice in full. |
+| `bare` | A full name, later the name without its legal form. |
+| `word` | A full name, later its distinctive word alone, twice. |
+| `before` | The distinctive word alone, then the full name. |
+| `multi` | An organisation with several distinctive words, later two of them alone, one of them not the first. |
+| `shared` | Two organisations with the same generic word (`Welch Logistics LLC`, `Pitts Logistics Ltd`), later each distinctive word alone. |
+| `generic` | A full name, its generic word on its own and capitalised (at a sentence start or as a heading), which is not a span, and later the distinctive word alone. |
+| `lower` | A full name, later its distinctive word in lower case, as in a quick chat. |
+| `common` | An organisation whose distinctive word is a common word that is also a name (`Stone`, `Mesa`), later that word alone, capitalised. |
+
+The rules do not look for organisations, and the ML model does not run in CI. So the generator
+also writes `tests/eval/corpus/orgs.terms.yaml`, a dictionary with the first full-name mention of
+every organisation of both files, and `tests/eval/corpus/orgs.yaml` is a configuration that
+loads it. With it, CI measures the case that matters here: the full name is detected, and the
+question is what happens to its shorter forms.
+
+```bash
+uv run python -m aliasgate.eval --config tests/eval/corpus/orgs.yaml tests/eval/corpus/orgs.*.jsonl
+```
+
+Distinctive words are surnames from [Faker](https://faker.readthedocs.io/) (`en_US` and
+`es_ES`, seeds 1801 and 1802), except in `common`, where they come from a fixed list of six
+words per language that are in `COMMON_WORDS` (`Stone`, `King`, `Bell`, `Brown`, `Rice`,
+`Young`; `Mesa`, `Plaza`, `Torre`, `Luna`, `Vega`, `Rubio`). Generic words (12 per language) and
+legal forms (`Ltd`, `LLC`, `PLC`, `Inc.`, `Corp.`, and `LLP` in `multi`; `S.L.`, `S.A.`,
+`S.L.U.`, `S.A.U.`, `S.Coop.`) come from fixed lists in the generator. A distinctive word is
+drawn again when it is shorter than three characters, is not made of letters, is a common word,
+a generic word, a legal form or a connector, or belongs to another organisation of either file
+(outside `common`). The organisations of an example are drawn again when they share a word
+(other than their generic word in `shared`), when a distinctive word also occurs outside the
+gold spans of its example, when a full name was used before, and, in Spanish, when the word
+after `y` starts with `i`, `í`, `hi` or `hí`, where Spanish writes `e`. A full name is always
+followed by `,`, `:` or a space and a lower-case letter, so that the final `.` of a legal form
+never ends a sentence.
+
+The generator reads `COMMON_WORDS`, so a change to that list that changes the corpus makes
+`--check` fail; the pull request that changes the list regenerates the corpus and records the
+new numbers. The files are committed. To regenerate them, or to check that the committed files
+match the generator (only with the Faker version in `uv.lock`, which was 40.54.0 when they were
+written):
+
+```bash
+uv run python tools/generate_org_corpus.py
+uv run python tools/generate_org_corpus.py --check
+```
+
 ## Baseline
 
 Measured on 2026-11-20 with the committed corpora.
@@ -565,3 +632,80 @@ the numbers of the dictionary run, except Spanish `hyphen`, where 8 characters l
 example the model finds the name without its second surname, which is then no form of the
 person. The synthetic corpora give the same numbers as before, rules only and with the ML
 layer, with the same predicted spans.
+
+### Organisation corpus
+
+Measured on 2026-11-23 with the committed organisation corpus, before any linking of
+organisation names. These are the numbers that organisation name linking
+([slice 19](plan/slice-19-org-forms.md)) must improve.
+
+**With the dictionary of full names** (`--config tests/eval/corpus/orgs.yaml`). The dictionary
+finds the 260 full-name mentions of each language and nothing else, and each of the 220 shorter
+forms is forwarded whole: the leak rate is 0.2190 in English (1,503 of 6,864 gold characters)
+and 0.2053 in Spanish (1,596 of 7,775). No predicted span lies outside the gold spans, and there
+was no round-trip failure.
+
+| Type | en: gold | en: predicted | en: `recall_overlap` | en: `recall_exact` | en: `precision_exact` | es: gold | es: predicted | es: `recall_overlap` | es: `recall_exact` | es: `precision_exact` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `ORG` | 480 | 260 | 0.542 | 0.542 | 1.000 | 480 | 260 | 0.542 | 0.542 | 1.000 |
+
+| Type | Language | `mentions` | `placed` | `same_pairs` | `linked` | `wrong` | `link_recall` | `link_precision` |
+|---|---|---|---|---|---|---|---|---|
+| `ORG` | en | 480 | 260 | 40 | 40 | 0 | 1.000 | 1.000 |
+| `ORG` | es | 480 | 260 | 40 | 40 | 0 | 1.000 | 1.000 |
+
+As for the person corpus, the perfect linking numbers say only that the shorter forms are not
+placed: the 40 pairs are the full names that `full` repeats.
+
+**With the ML layer, without the dictionary** (`ALIASGATE_DETECTION__ML__ENABLED=true`,
+`--types PERSON,ORG`), same model, revision, settings and library versions as above. Both files
+took 24 seconds, model loading included. The leak rate is 0.1809 in English (1,242 of 6,864
+characters) and 0.1651 in Spanish (1,284 of 7,775), with no round-trip failure.
+
+| Type | en: gold | en: predicted | en: `recall_overlap` | en: `recall_exact` | en: `precision_exact` | es: gold | es: predicted | es: `recall_overlap` | es: `recall_exact` | es: `precision_exact` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `ORG` | 480 | 229 | 0.750 | 0.448 | 0.939 | 480 | 253 | 0.698 | 0.473 | 0.897 |
+| `PERSON` | 0 | 161 | – | – | 0.000 | 0 | 84 | – | – | 0.000 |
+
+| Type | Language | `mentions` | `placed` | `same_pairs` | `linked` | `wrong` | `link_recall` | `link_precision` |
+|---|---|---|---|---|---|---|---|---|
+| `ORG` | en | 480 | 360 | 158 | 85 | 0 | 0.538 | 1.000 |
+| `ORG` | es | 480 | 335 | 132 | 61 | 0 | 0.462 | 1.000 |
+
+By category (`placed` of `mentions`, `ORG` characters leaked of gold, and pairs as
+`same_pairs` / `linked` / `wrong`):
+
+| Run | Category | en: placed | en: `ORG` leaked | en: same / linked / wrong | es: placed | es: `ORG` leaked | es: same / linked / wrong |
+|---|---|---|---|---|---|---|---|
+| dictionary | `full` | 80 of 80 | 0 of 1616 | 40 / 40 / 0 | 80 of 80 | 0 of 1966 | 40 / 40 / 0 |
+| dictionary | `bare` | 20 of 40 | 300 of 691 | 0 / 0 / 0 | 20 of 40 | 341 of 819 | 0 / 0 / 0 |
+| dictionary | `word` | 20 of 60 | 232 of 628 | 0 / 0 / 0 | 20 of 60 | 258 of 746 | 0 / 0 / 0 |
+| dictionary | `before` | 20 of 40 | 143 of 584 | 0 / 0 / 0 | 20 of 40 | 127 of 586 | 0 / 0 / 0 |
+| dictionary | `multi` | 20 of 60 | 261 of 863 | 0 / 0 / 0 | 20 of 60 | 264 of 723 | 0 / 0 / 0 |
+| dictionary | `shared` | 40 of 80 | 244 of 1016 | 0 / 0 / 0 | 40 of 80 | 262 of 1195 | 0 / 0 / 0 |
+| dictionary | `generic` | 20 of 40 | 120 of 514 | 0 / 0 / 0 | 20 of 40 | 121 of 589 | 0 / 0 / 0 |
+| dictionary | `lower` | 20 of 40 | 116 of 497 | 0 / 0 / 0 | 20 of 40 | 130 of 601 | 0 / 0 / 0 |
+| dictionary | `common` | 20 of 40 | 87 of 455 | 0 / 0 / 0 | 20 of 40 | 93 of 550 | 0 / 0 / 0 |
+| ML | `full` | 80 of 80 | 0 of 1616 | 40 / 40 / 0 | 80 of 80 | 0 of 1966 | 40 / 40 / 0 |
+| ML | `bare` | 24 of 40 | 238 of 691 | 4 / 0 / 0 | 29 of 40 | 182 of 819 | 9 / 0 / 0 |
+| ML | `word` | 44 of 60 | 101 of 628 | 36 / 14 / 0 | 42 of 60 | 215 of 746 | 33 / 13 / 0 |
+| ML | `before` | 36 of 40 | 190 of 584 | 16 / 11 / 0 | 30 of 40 | 65 of 586 | 10 / 0 / 0 |
+| ML | `multi` | 44 of 60 | 256 of 863 | 30 / 14 / 0 | 41 of 60 | 183 of 723 | 27 / 8 / 0 |
+| ML | `shared` | 51 of 80 | 176 of 1016 | 11 / 1 / 0 | 42 of 80 | 250 of 1195 | 2 / 0 / 0 |
+| ML | `generic` | 26 of 40 | 129 of 514 | 6 / 3 / 0 | 26 of 40 | 196 of 589 | 6 / 0 / 0 |
+| ML | `lower` | 27 of 40 | 86 of 497 | 7 / 1 / 0 | 24 of 40 | 104 of 601 | 4 / 0 / 0 |
+| ML | `common` | 28 of 40 | 66 of 455 | 8 / 1 / 0 | 21 of 40 | 89 of 550 | 1 / 0 / 0 |
+
+What the ML run shows:
+
+- The model finds some distinctive words alone, but labels most of them `PERSON` (none of the
+  161 English and 84 Spanish `PERSON` spans is gold) and gives them a number of their own: of
+  the 118 English and 92 Spanish pairs beyond those of `full`, 45 and 21 share a number.
+- Where a distinctive word also stands alone, the model often finds only that word inside the
+  full name, as `PERSON` (`Bonilla` in `Bonilla Marine Corp.`), and the rest of the full name
+  leaks: 33 English full names are found only in part, 11 of the 20 in `before`. In Spanish it
+  often leaves the leading generic word out of the span (`Amorós S.A.` in
+  `Servicios Amorós S.A.`): 22 Spanish full names are found only in part, in `word`, `multi`
+  and `generic`.
+- No predicted span covers a generic word on its own. The only predicted spans outside the gold
+  spans are 7 `PERSON` spans in English `bare`, the word `contact` in `The contact at …`.

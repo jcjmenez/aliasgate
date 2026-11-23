@@ -55,6 +55,106 @@ Slice 17 (released in v0.5.0). Every earlier slice is merged.
   50 of 127 same-organisation pairs linked, and no wrong pair. Slice 19 has the numbers per
   category, and those with the prototype engine.
 
+## Decisions made while implementing
+
+No question was asked: nothing in this file was left open in a way that could change what the
+corpus measures. Where it was silent:
+
+- **Shapes per category.** Only `multi` uses the shape with several distinctive words, which
+  has no generic word; every other category uses the standard shape, as the examples of the
+  category table do.
+- **"Share no word" includes the legal form.** The two organisations of `full` and `shared`
+  have different legal forms, as in the examples (`Ltd` and `PLC`, `LLC` and `Ltd`), and in
+  `shared` they share only their generic word.
+- **Spanish templates** avoid `y` and `o` before a slot, as the person corpus does: two generic
+  words (`Ingeniería`, `Inversiones`) and some surnames would need `e`. So the Spanish examples
+  of `full` (`… S.L. y Construcciones …`) and `generic` (`Talleres y repuestos subieron …`)
+  were not used as written: `full` names the second organisation after `con` or `a`, and
+  `generic` writes the generic word before a colon at a sentence start
+  (`Servicios: el gasto subió …`) or as a heading (`Categoría: Distribuciones.`). English
+  `generic` uses the sentence start of the example (`Partners costs rose this quarter`) and a
+  heading (`Category: Consulting.`). The rule for the word after `y` follows this file
+  literally, so a word like `Hierro` would be drawn again too, although Spanish writes
+  `y hierro`.
+- **A distinctive word** may not be a generic word, a legal form (without its dots) or a
+  connector of either language, `LLP` included.
+- **Templates.** Slots are `{a}`, `{b}`, `{a.bare}`, `{a.word}`, `{a.word2}`, `{a.word3}`, an
+  optional `|lower`, and `{a.generic}`, which is not a span. The second English `word` template
+  has a possessive (`Scott's accounts team`), outside the span. No template holds a digit.
+- **The drawing loop** is a function of its own (`_draw`), so a unit test forces the Spanish
+  redraw through it (a bad drawing, then a good one) and checks that it gives up after
+  `MAX_ATTEMPTS` drawings.
+- **Which rules rejected drawings.** Of 610 drawings for the 360 examples, 54 were rejected
+  because the two organisations of an example shared a word (30 in `full`, 24 in `shared`), 2
+  because an organisation of `multi` repeated a word, 188 because a distinctive word had been
+  used before (Faker's `en_US` surnames repeat often) and 6 because a full name of `common` had
+  been used before. Neither the rule on distinctive words outside the gold spans nor the Spanish
+  `y` rule rejected one, so unit tests force both, and tests on the committed files check both
+  properties.
+- **Tests beyond the list.** The full name, bare name and words of both shapes; spans and ids in
+  order of first mention, with a generic slot (no span), a lower-case slot and a second
+  organisation mentioned first; the terms of an example (full names only, in text order); the
+  exact dictionary file format; each category holding exactly the forms it is for; the word
+  lists of this file; and what a distinctive word is.
+- **Measured.** Each generator rule was broken on purpose and a test failed (18 mutants: each
+  rejection rule, the accent and position of the `y` rule, dot removal, the generic slot, lower
+  case, id order, the terms, the give-up, the file header; two survived at first and got the
+  id-order and file-format tests). So did four edits of the committed files (a word outside the
+  spans, an id out of order, a dictionary entry or a line removed). The generator writes the
+  corpus in under a second.
+
+**Baseline** (2026-11-23, Faker 40.54.0; the totals are in `docs/evaluation.md`). Nothing
+contradicted the expectation: with the dictionary, `full` leaks nothing, each of the 220
+shorter forms per language leaks whole, and `generic` has no predicted span outside the gold
+spans. Per category (`placed` of `mentions`, `ORG` characters leaked of gold, and pairs as
+`same_pairs` / `linked` / `wrong`):
+
+| Run | Category | en: placed | en: `ORG` leaked | en: same / linked / wrong | es: placed | es: `ORG` leaked | es: same / linked / wrong |
+|---|---|---|---|---|---|---|---|
+| dictionary | `full` | 80 of 80 | 0 of 1616 | 40 / 40 / 0 | 80 of 80 | 0 of 1966 | 40 / 40 / 0 |
+| dictionary | `bare` | 20 of 40 | 300 of 691 | 0 / 0 / 0 | 20 of 40 | 341 of 819 | 0 / 0 / 0 |
+| dictionary | `word` | 20 of 60 | 232 of 628 | 0 / 0 / 0 | 20 of 60 | 258 of 746 | 0 / 0 / 0 |
+| dictionary | `before` | 20 of 40 | 143 of 584 | 0 / 0 / 0 | 20 of 40 | 127 of 586 | 0 / 0 / 0 |
+| dictionary | `multi` | 20 of 60 | 261 of 863 | 0 / 0 / 0 | 20 of 60 | 264 of 723 | 0 / 0 / 0 |
+| dictionary | `shared` | 40 of 80 | 244 of 1016 | 0 / 0 / 0 | 40 of 80 | 262 of 1195 | 0 / 0 / 0 |
+| dictionary | `generic` | 20 of 40 | 120 of 514 | 0 / 0 / 0 | 20 of 40 | 121 of 589 | 0 / 0 / 0 |
+| dictionary | `lower` | 20 of 40 | 116 of 497 | 0 / 0 / 0 | 20 of 40 | 130 of 601 | 0 / 0 / 0 |
+| dictionary | `common` | 20 of 40 | 87 of 455 | 0 / 0 / 0 | 20 of 40 | 93 of 550 | 0 / 0 / 0 |
+| ML | `full` | 80 of 80 | 0 of 1616 | 40 / 40 / 0 | 80 of 80 | 0 of 1966 | 40 / 40 / 0 |
+| ML | `bare` | 24 of 40 | 238 of 691 | 4 / 0 / 0 | 29 of 40 | 182 of 819 | 9 / 0 / 0 |
+| ML | `word` | 44 of 60 | 101 of 628 | 36 / 14 / 0 | 42 of 60 | 215 of 746 | 33 / 13 / 0 |
+| ML | `before` | 36 of 40 | 190 of 584 | 16 / 11 / 0 | 30 of 40 | 65 of 586 | 10 / 0 / 0 |
+| ML | `multi` | 44 of 60 | 256 of 863 | 30 / 14 / 0 | 41 of 60 | 183 of 723 | 27 / 8 / 0 |
+| ML | `shared` | 51 of 80 | 176 of 1016 | 11 / 1 / 0 | 42 of 80 | 250 of 1195 | 2 / 0 / 0 |
+| ML | `generic` | 26 of 40 | 129 of 514 | 6 / 3 / 0 | 26 of 40 | 196 of 589 | 6 / 0 / 0 |
+| ML | `lower` | 27 of 40 | 86 of 497 | 7 / 1 / 0 | 24 of 40 | 104 of 601 | 4 / 0 / 0 |
+| ML | `common` | 28 of 40 | 66 of 455 | 8 / 1 / 0 | 21 of 40 | 89 of 550 | 1 / 0 / 0 |
+
+Leak rate per category, for comparison with the prototype table of slice 19:
+
+| Category | en, dictionary | es, dictionary | en, ML | es, ML |
+|---|---|---|---|---|
+| `full` | 0 | 0 | 0 | 0 |
+| `bare` | 0.4342 | 0.4164 | 0.3444 | 0.2222 |
+| `word` | 0.3694 | 0.3458 | 0.1608 | 0.2882 |
+| `before` | 0.2449 | 0.2167 | 0.3253 | 0.1109 |
+| `multi` | 0.3024 | 0.3651 | 0.2966 | 0.2531 |
+| `shared` | 0.2402 | 0.2192 | 0.1732 | 0.2092 |
+| `generic` | 0.2335 | 0.2054 | 0.2510 | 0.3328 |
+| `lower` | 0.2334 | 0.2163 | 0.1730 | 0.1730 |
+| `common` | 0.1912 | 0.1691 | 0.1451 | 0.1618 |
+| all | 0.2190 | 0.2053 | 0.1809 | 0.1651 |
+
+With the ML layer, the model labels most distinctive words it finds `PERSON` (161 English and 84
+Spanish predicted `PERSON` spans, none gold) and, where a word also stands alone, often finds
+only that word inside the full name (`Bonilla` in `Bonilla Marine Corp.`), so 33 English full
+names (11 of the 20 in `before`) are found only in part. In Spanish it leaves the leading
+generic word out of 22 full names (`Amorós S.A.` in `Servicios Amorós S.A.`). It found no
+generic word on its own; its only spans outside the gold spans are 7 `PERSON` spans of
+`contact` in English `bare` (`The contact at …`). For slice 19: its dictionary gate does not
+depend on any of this, and English `before` and `generic` and Spanish `generic` are where the ML
+layer leaks more than the dictionary, because of those partial full names.
+
 ## Dependencies to add
 
 None. Faker is already a development dependency (slice 11).
