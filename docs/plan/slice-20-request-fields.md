@@ -138,6 +138,36 @@ value close to OpenAI's 512-character limit can then exceed it, and the provider
 request. Nothing leaks. The OpenAPI spec gives message `name` no pattern and no length limit;
 whether the live API accepts brackets in it is checked manually (see Tests).
 
+## Decisions made while implementing
+
+- **A `description` inside `input_examples` is one slot, among the tool descriptions.** The
+  tool walk of slice 08 already takes every `description` string anywhere in `tools`, those
+  in `input_examples` included. So the examples add every other string, through the new
+  `slots_for_strings_not_under(container, key)` in `base.py`. Walking all of them again would
+  have made one value two slots, and the v0.6.0 slots stay a prefix of the new ones. A test
+  pins it.
+- **`slots_for_string_list(items, where)`** in `base.py` gives a slot per item and raises
+  `MalformedRequestError` naming `where[i]`. OpenAI `stop` and Anthropic `stop_sequences` share
+  it.
+- **`output_config` is read even without `tools`**, and an `output_config` without `format`
+  (`{"effort": "low"}`) adds no slot.
+- **The stream handles `message_delta` before looking for an `index`**, which that event does
+  not have. Unresolved placeholders in its `stop_sequence` are added to the settled count, and
+  the event is re-serialised only when the restored value differs.
+- **Tests beyond the list:** an `output_config` without `format`; tools that are not objects,
+  skipped by the new walks; a `web_search_options` that is not an object, left to the
+  provider; the location removed with `tool_definitions` off; a stop sequence without
+  placeholders and malformed `message_delta` events, sent as the original event; and a proxy
+  test with `strip_user_location: false`, which forwards the location.
+- **Measured.** The reproduction script, run against the implementation, gives the prototype
+  column of the table above case by case. 37 mutants were tried: each new slot, the order of
+  the request fields, each shape check, the metadata error naming the key, the location
+  removal (kept, removed regardless of the policy, `web_search_options` deleted when empty),
+  `stop_sequence` restoration in both paths, the unresolved count, re-serialising unchanged
+  events, the defaults, `_policy` and the `check` line. All were killed. Only `_policy` not
+  passing the setting first survived, because the `Policy` default is also on; the proxy test
+  with the setting off closes it. The new property passed 20,000 examples.
+
 ## Dependencies to add
 
 None.

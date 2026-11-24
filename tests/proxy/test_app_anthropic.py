@@ -147,6 +147,58 @@ async def test_a_message_is_sent_with_placeholders_and_returned_with_real_values
     assert "metadata" not in _sent(route)
 
 
+async def test_a_stop_sequence_is_sent_pseudonymised_and_restored_in_the_answer(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    answer = {
+        **_message(_text("Hello"), stop_reason="stop_sequence"),
+        "stop_sequence": "[PERSON_1]:",
+    }
+    route = upstream.post(f"{ANTHROPIC}{MESSAGES}").respond(json=answer)
+    request = _request(TEXT, stop_sequences=["Juan P\u00e9rez:"])
+    response = await client.post(MESSAGES, json=request, headers=HEADERS)
+
+    assert response.status_code == 200
+    assert _sent(route)["stop_sequences"] == ["[PERSON_1]:"]
+    assert response.json()["stop_sequence"] == "Juan P\u00e9rez:"
+
+
+async def test_a_streamed_stop_sequence_is_restored(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    delta = {"stop_reason": "stop_sequence", "stop_sequence": "[PERSON_1]:"}
+    body = _sse(
+        MESSAGE_START,
+        _start(0, _text("")),
+        _delta(0, "text_delta", "Hello"),
+        _stop(0),
+        {"type": "message_delta", "delta": delta, "usage": {"output_tokens": 1}},
+        MESSAGE_STOP,
+    )
+    upstream.post(f"{ANTHROPIC}{MESSAGES}").respond(headers=SSE, content=body)
+    request = _request(TEXT, stream=True, stop_sequences=["Juan P\u00e9rez:"])
+    response = await client.post(MESSAGES, json=request, headers=HEADERS)
+
+    deltas = [
+        data for _, data in _client_events(response.content) if data["type"] == "message_delta"
+    ]
+    assert deltas[0]["delta"]["stop_sequence"] == "Juan P\u00e9rez:"
+
+
+async def test_count_tokens_forwards_a_web_search_tool_without_its_location(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post(f"{ANTHROPIC}{COUNT_TOKENS}").respond(json={"input_tokens": 42})
+    location = {"type": "approximate", "city": "Springfield"}
+    tool = {"type": "web_search_20250305", "name": "web_search", "user_location": location}
+    request = _request(TEXT, tools=[tool])
+    request.pop("max_tokens")
+    response = await client.post(COUNT_TOKENS, json=request, headers=HEADERS)
+
+    assert response.status_code == 200
+    assert _sent(route)["tools"] == [{"type": "web_search_20250305", "name": "web_search"}]
+
+
 async def test_tool_use_input_is_restored_in_a_whole_response(
     client: httpx.AsyncClient, upstream: respx.MockRouter
 ) -> None:

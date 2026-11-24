@@ -1,9 +1,12 @@
 import copy
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from aliasgate.detectors.dictionary import DictionaryDetector, Term
 from aliasgate.detectors.rules import RuleDetector
@@ -278,7 +281,8 @@ def test_prediction_content_as_string_and_as_text_parts_is_a_slot() -> None:
 def test_tool_descriptions_are_slots_and_names_enums_and_property_names_are_not() -> None:
     body = _load("request_all_fields.json")
     body["messages"] = []
-    del body["prediction"]
+    for key in ("prediction", "stop", "metadata", "prompt_cache_key"):
+        del body[key]
     assert _texts(body) == [
         "tool description",
         "to description",
@@ -286,6 +290,7 @@ def test_tool_descriptions_are_slots_and_names_enums_and_property_names_are_not(
         "custom tool description",
         "function description",
         "query description",
+        "response format description",
     ]
 
 
@@ -293,14 +298,15 @@ def test_with_tool_definitions_off_no_tool_slot_exists() -> None:
     body = _load("request_all_fields.json")
     texts = _texts(body, Policy(tool_definitions=False))
     assert not any("description" in text for text in texts)
-    assert texts[-1] == "prediction text"
+    assert texts[-4:] == ["prediction text", "stop text", "T-0001", "cache key"]
 
 
-def test_slot_order_is_messages_then_prediction_then_tools() -> None:
+def test_slot_order_is_messages_then_prediction_then_tools_then_request_fields() -> None:
     assert _texts(_load("request_all_fields.json")) == [
         "system text",
         "developer part 1",
         "developer part 2",
+        "customer",
         "user part",
         "assistant part",
         "refusal part",
@@ -319,6 +325,10 @@ def test_slot_order_is_messages_then_prediction_then_tools() -> None:
         "custom tool description",
         "function description",
         "query description",
+        "response format description",
+        "stop text",
+        "T-0001",
+        "cache key",
     ]
 
 
@@ -327,13 +337,18 @@ def test_fields_outside_the_slots_are_never_touched() -> None:
     original = copy.deepcopy(body)
     prepared = DIALECT.prepare_request(body, Policy())
     prepared.apply([f"[SLOT_{number}]" for number in range(1, len(prepared.texts()) + 1)])
-    for key in ("model", "metadata", "temperature", "stop", "response_format"):
+    for key in ("model", "temperature"):
         assert body[key] == original[key]
+    assert body["web_search_options"] == {"search_context_size": "low"}
+    assert list(body["metadata"]) == list(original["metadata"])
+    json_schema = body["response_format"]["json_schema"]
+    assert json_schema["name"] == "answer"
+    assert json_schema["schema"] == {"type": "object"}
     for message, before in zip(body["messages"], original["messages"], strict=True):
         assert message["role"] == before["role"]
-        assert message.get("name") == before.get("name")
         assert message.get("tool_call_id") == before.get("tool_call_id")
         assert message.get("audio") == before.get("audio")
+    assert body["messages"][7]["name"] == "lookup"
     calls = body["messages"][3]["tool_calls"]
     assert [call["id"] for call in calls] == ["call_0001", "call_0002"]
     assert calls[0]["function"]["name"] == "send_email"
@@ -355,6 +370,7 @@ def test_applying_the_texts_unchanged_changes_nothing_but_the_stripped_identifie
     prepared = DIALECT.prepare_request(body, Policy())
     prepared.apply(prepared.texts())
     del original["user"], original["safety_identifier"]
+    del original["web_search_options"]["user_location"]
     assert body == original
 
 
@@ -377,6 +393,213 @@ def test_a_body_without_identifiers_is_fine() -> None:
     body: dict[str, Any] = {"messages": []}
     assert _texts(body) == []
     assert body == {"messages": []}
+
+
+# Request fields read since slice 20
+
+
+def test_a_message_name_is_a_slot_before_its_content() -> None:
+    body: dict[str, Any] = {
+        "messages": [
+            {"role": "system", "name": "sys name", "content": "system text"},
+            {"role": "user", "name": "user name", "content": "user text"},
+            {"role": "assistant", "name": "assistant name", "content": "assistant text"},
+            {"role": "developer", "name": "dev name", "content": "developer text"},
+        ]
+    }
+    assert _texts(body) == [
+        "sys name",
+        "system text",
+        "user name",
+        "user text",
+        "assistant name",
+        "assistant text",
+        "dev name",
+        "developer text",
+    ]
+
+
+def test_the_name_of_a_function_message_is_not_a_slot() -> None:
+    body: dict[str, Any] = {
+        "messages": [{"role": "function", "name": "lookup", "content": "function result"}]
+    }
+    assert _texts(body) == ["function result"]
+
+
+def test_a_null_message_name_adds_no_slot() -> None:
+    body: dict[str, Any] = {"messages": [{"role": "user", "name": None, "content": "x"}]}
+    assert _texts(body) == ["x"]
+
+
+def test_stop_as_a_string_is_one_slot_and_as_a_list_one_slot_per_item() -> None:
+    assert _texts({"messages": [], "stop": "END"}) == ["END"]
+    assert _texts({"messages": [], "stop": ["a", "b", "c"]}) == ["a", "b", "c"]
+    assert _texts({"messages": [], "stop": None}) == []
+
+
+def test_metadata_values_are_slots_in_key_order_and_keys_are_kept() -> None:
+    body: dict[str, Any] = {"messages": [], "metadata": {"b": "second", "a": "first"}}
+    prepared = DIALECT.prepare_request(body, Policy())
+    assert prepared.texts() == ["second", "first"]
+    prepared.apply(["[X_1]", "[X_2]"])
+    assert body["metadata"] == {"b": "[X_1]", "a": "[X_2]"}
+    assert list(body["metadata"]) == ["b", "a"]
+
+
+def test_null_metadata_and_cache_key_add_no_slot() -> None:
+    assert _texts({"messages": [], "metadata": None, "prompt_cache_key": None}) == []
+
+
+def test_request_fields_come_after_tool_definitions_in_a_fixed_order() -> None:
+    body: dict[str, Any] = {
+        "messages": [{"role": "user", "content": "text"}],
+        "prompt_cache_key": "key",
+        "metadata": {"m": "meta"},
+        "stop": "stop",
+        "tools": [{"type": "function", "function": {"name": "f", "description": "tool"}}],
+    }
+    assert _texts(body) == ["text", "tool", "stop", "meta", "key"]
+
+
+def test_request_fields_are_slots_even_with_tool_definitions_off() -> None:
+    body: dict[str, Any] = {"messages": [], "stop": "s", "metadata": {"m": "v"}}
+    assert _texts(body, Policy(tool_definitions=False)) == ["s", "v"]
+
+
+def test_response_format_descriptions_are_slots_at_any_depth() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"to": {"type": "string", "description": "inner", "enum": ["x"]}},
+    }
+    body: dict[str, Any] = {
+        "messages": [],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "reply", "description": "outer", "schema": schema},
+        },
+    }
+    prepared = DIALECT.prepare_request(body, Policy())
+    assert prepared.texts() == ["outer", "inner"]
+    prepared.apply(["[A]", "[B]"])
+    json_schema = body["response_format"]["json_schema"]
+    assert json_schema["name"] == "reply"
+    assert json_schema["schema"]["properties"]["to"]["enum"] == ["x"]
+
+
+def test_a_text_response_format_adds_no_slot() -> None:
+    assert _texts({"messages": [], "response_format": {"type": "text"}}) == []
+
+
+def test_response_format_is_not_read_with_tool_definitions_off() -> None:
+    body: dict[str, Any] = {"messages": [], "response_format": "json"}
+    assert _texts(body, Policy(tool_definitions=False)) == []
+    assert body["response_format"] == "json"
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (
+            {"messages": [{"role": "user", "name": 7, "content": "x"}]},
+            "messages[0].name: expected a string",
+        ),
+        ({"messages": [], "stop": 3}, "stop: expected a string or a list"),
+        ({"messages": [], "stop": ["a", 1]}, "stop[1]: expected a string"),
+        ({"messages": [], "metadata": []}, "metadata: expected an object"),
+        (
+            {"messages": [], "metadata": {"note": "x", "maria.lopez@example.org": 2}},
+            "metadata: value 1: expected a string",
+        ),
+        ({"messages": [], "prompt_cache_key": 5}, "prompt_cache_key: expected a string"),
+        ({"messages": [], "response_format": "json"}, "response_format: expected an object"),
+    ],
+)
+def test_request_fields_of_the_wrong_shape_are_malformed(
+    body: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(MalformedRequestError) as excinfo:
+        DIALECT.prepare_request(body, Policy())
+    assert str(excinfo.value) == message
+    assert "maria" not in str(excinfo.value)
+
+
+def test_user_location_is_removed_by_default_and_web_search_options_are_kept() -> None:
+    location = {"type": "approximate", "approximate": {"city": "Springfield"}}
+    body: dict[str, Any] = {
+        "messages": [],
+        "web_search_options": {"search_context_size": "low", "user_location": location},
+    }
+    DIALECT.prepare_request(body, Policy())
+    assert body["web_search_options"] == {"search_context_size": "low"}
+
+
+def test_web_search_options_stay_when_the_location_was_their_only_key() -> None:
+    body: dict[str, Any] = {
+        "messages": [],
+        "web_search_options": {"user_location": {"type": "approximate"}},
+    }
+    DIALECT.prepare_request(body, Policy())
+    assert body["web_search_options"] == {}
+
+
+def test_user_location_is_kept_when_its_stripping_is_off() -> None:
+    body = _load("request_all_fields.json")
+    original = copy.deepcopy(body["web_search_options"])
+    DIALECT.prepare_request(body, Policy(strip_user_location=False))
+    assert body["web_search_options"] == original
+    assert "user" not in body
+
+
+def test_location_and_identifier_stripping_are_independent() -> None:
+    body = _load("request_all_fields.json")
+    DIALECT.prepare_request(body, Policy(strip_user_identifiers=False))
+    assert "user_location" not in body["web_search_options"]
+    assert body["user"] == "end-user-0001"
+
+
+def test_web_search_options_that_are_not_an_object_are_left_to_the_provider() -> None:
+    body: dict[str, Any] = {"messages": [], "web_search_options": "on"}
+    DIALECT.prepare_request(body, Policy())
+    assert body["web_search_options"] == "on"
+
+
+_FIELD_TEXT = st.text(max_size=12)
+
+
+@given(
+    names=st.lists(st.none() | _FIELD_TEXT, max_size=3),
+    stop=st.none() | _FIELD_TEXT | st.lists(_FIELD_TEXT, max_size=4),
+    metadata=st.none() | st.dictionaries(st.text(max_size=8), _FIELD_TEXT, max_size=4),
+    cache_key=st.none() | _FIELD_TEXT,
+)
+def test_property_every_request_field_string_is_a_slot_and_round_trips(
+    names: list[str | None],
+    stop: str | list[str] | None,
+    metadata: dict[str, str] | None,
+    cache_key: str | None,
+) -> None:
+    messages = [{"role": "user", "name": name, "content": "c"} for name in names]
+    body: dict[str, Any] = {
+        "messages": messages,
+        "stop": stop,
+        "metadata": metadata,
+        "prompt_cache_key": cache_key,
+    }
+    original = copy.deepcopy(body)
+    prepared = DIALECT.prepare_request(body, Policy())
+    prepared.apply(prepared.texts())
+    assert body == original
+    prepared.apply([f"[SLOT_{number}]" for number in range(1, len(prepared.texts()) + 1)])
+    values = [message["name"] for message in body["messages"] if message["name"] is not None]
+    if isinstance(body["stop"], str):
+        values.append(body["stop"])
+    elif body["stop"] is not None:
+        values.extend(body["stop"])
+    values.extend((body["metadata"] or {}).values())
+    if body["prompt_cache_key"] is not None:
+        values.append(body["prompt_cache_key"])
+    assert all(re.fullmatch(r"\[SLOT_\d+\]", value) for value in values)
+    assert len(set(values)) == len(values)
 
 
 @pytest.mark.parametrize(

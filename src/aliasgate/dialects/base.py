@@ -22,10 +22,12 @@ UNKNOWN_KIND: Final = "unknown"
 
 @dataclass(frozen=True, slots=True)
 class Policy:
-    """How a dialect treats uninspectable content, end-user identifiers and tool definitions."""
+    """How a dialect treats uninspectable content, end-user identifiers and location, and tool
+    definitions."""
 
     unsupported_content: Literal["block", "pass"] = "block"
     strip_user_identifiers: bool = True
+    strip_user_location: bool = True
     tool_definitions: bool = True
 
 
@@ -180,6 +182,21 @@ def slots_for_key_strings(container: dict[str, Any] | list[Any], key: str) -> li
     """A slot for every string stored directly under `key` in any dict reachable from the
     container, in the order of `slots_for_json_strings`. Other strings are never slots."""
     return [slot for slot, holder in _string_slots(container) if holder == key]
+
+
+def slots_for_strings_not_under(container: dict[str, Any] | list[Any], key: str) -> list[Slot]:
+    """A slot for every string value reachable in the container except those stored directly
+    under `key`, in the order of `slots_for_json_strings`. Keys are never slots."""
+    return [slot for slot, holder in _string_slots(container) if holder != key]
+
+
+def slots_for_string_list(items: list[Any], where: str) -> list[Slot]:
+    """A slot per item of `items`, in order. Raises MalformedRequestError naming `where[i]`, and
+    nothing of the value, when an item is not a string."""
+    for index, item in enumerate(items):
+        if not isinstance(item, str):
+            raise MalformedRequestError(f"{where}[{index}]: expected a string")
+    return [index_slot(items, index) for index in range(len(items))]
 
 
 def restore_all_strings(value: Any, mapping: Mapping) -> Any:

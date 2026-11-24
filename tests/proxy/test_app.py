@@ -118,6 +118,45 @@ async def test_end_user_identifiers_are_absent_from_the_upstream_body(
     assert "safety_identifier" not in _sent(route)
 
 
+async def test_request_fields_are_pseudonymised_and_the_location_removed(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post(CHAT).respond(json=chat_response("ok"))
+    location = {"type": "approximate", "approximate": {"city": "Springfield"}}
+    body = chat_request(
+        HAPPY_TEXT,
+        stop=["Juan P\u00e9rez:"],
+        metadata={"customer": "Juan P\u00e9rez", "mail": "maria.lopez@example.org"},
+        prompt_cache_key="maria.lopez@example.org",
+        web_search_options={"search_context_size": "low", "user_location": location},
+    )
+    body["messages"][0]["name"] = "Juan P\u00e9rez"
+    response = await client.post(CHAT, json=body)
+
+    assert response.status_code == 200
+    sent = _sent(route)
+    assert sent["messages"][0]["name"] == "[PERSON_1]"
+    assert sent["stop"] == ["[PERSON_1]:"]
+    assert sent["metadata"] == {"customer": "[PERSON_1]", "mail": "[EMAIL_2]"}
+    assert sent["prompt_cache_key"] == "[EMAIL_2]"
+    assert sent["web_search_options"] == {"search_context_size": "low"}
+    raw = route.calls.last.request.content.decode()
+    for value in (*VALUES, "maria.lopez", "Springfield"):
+        assert value not in raw
+
+
+async def test_the_location_is_forwarded_when_its_stripping_is_turned_off(
+    make_client: ClientFactory, settings: Settings, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post(CHAT).respond(json=chat_response("ok"))
+    custom = settings.model_copy(update={"policy": PolicySettings(strip_user_location=False)})
+    location = {"type": "approximate", "approximate": {"city": "Springfield"}}
+    body = chat_request("hello", web_search_options={"user_location": location})
+    async with make_client(custom) as client:
+        assert (await client.post(CHAT, json=body)).status_code == 200
+    assert _sent(route)["web_search_options"] == {"user_location": location}
+
+
 async def test_the_forwarded_body_is_json_even_without_a_client_content_type(
     client: httpx.AsyncClient, upstream: respx.MockRouter
 ) -> None:

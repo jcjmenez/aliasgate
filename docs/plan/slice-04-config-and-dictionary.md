@@ -72,6 +72,10 @@ logging:
   level: INFO
 ```
 
+**Changed in [slice 20](slice-20-request-fields.md).** `policy` gains
+`strip_user_location: true`, after `strip_user_identifiers`, and `tool_definitions` also
+covers output schemas and Anthropic tool input examples.
+
 ```python
 class Settings(BaseModel): ...      # root model with the sections above as nested models
 

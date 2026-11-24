@@ -526,8 +526,10 @@ writes the results back with `prepared.apply(new_texts)`, which sets every slot 
 the finalisers.
 
 Slot order is part of the contract, because placeholder numbering follows it. The order is
-always: system content first, then messages in array order, and inside a message its parts in
-array order, then tool definitions last (so adding a tool does not renumber the conversation).
+always: system content first, then messages in array order, and inside a message its name and
+then its parts in array order, then tool definitions, their input examples and output schemas
+(so adding a tool does not renumber the conversation), then the request's stop sequences,
+metadata values and prompt cache key last.
 
 ### 6.1 What is processed
 
@@ -536,10 +538,15 @@ array order, then tool definitions last (so adding a tool does not renumber the 
 | System prompt and message text | yes | yes |
 | Tool results | yes | n/a |
 | Tool-call arguments | yes: parse the JSON, process every string value, serialise with `json.dumps(obj, ensure_ascii=False, separators=(",", ":"))`; if parsing fails treat the raw string as text | yes: `restore(..., json_escape=True)` on the raw JSON string, or plain `restore` on every string value when the API delivers a parsed object |
-| Tool definitions | only values under a `description` key (policy `tool_definitions`, default on); names, parameter names and enum values are never changed | n/a |
+| Message names (OpenAI `messages[].name`, except for the `function` role, where it names the function) | yes | n/a |
+| Tool definitions | only values under a `description` key (policy `tool_definitions`, default on); names, parameter names and `enum`, `const`, `default`, `examples` and `title` values are never changed | n/a |
+| Tool input examples (Anthropic `input_examples`) and output schemas (OpenAI `response_format`, Anthropic `output_config`) | with policy `tool_definitions`: every string of the examples, and the values under a `description` key of the schemas; keys are never changed | n/a |
+| Stop sequences (OpenAI `stop`, Anthropic `stop_sequences`) | yes | yes: Anthropic `stop_sequence`, in the response and in the stream's `message_delta` |
+| OpenAI `metadata` values and `prompt_cache_key` | yes; metadata keys are never changed | n/a |
 | Model reasoning with provider signatures (Anthropic `thinking`, `redacted_thinking`) | passed through unchanged | passed through unchanged (the user sees placeholders in reasoning; changing it would break the signature on the next turn) |
 | Images, audio, documents, files | rejected by default (policy `unsupported_content: block`); `pass` forwards them unchanged | n/a |
 | End-user identifiers (`user`, `safety_identifier`, `metadata.user_id`) | removed by default (policy `strip_user_identifiers`) | n/a |
+| End-user location (`user_location` of OpenAI `web_search_options` and of Anthropic tools) | removed by default (policy `strip_user_location`) | n/a |
 | Log probabilities, usage, ids | untouched | untouched |
 
 ### 6.2 Supported endpoints in v1

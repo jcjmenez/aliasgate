@@ -231,6 +231,7 @@ class PolicySettings(_Section):
 
     unsupported_content: Literal["block", "pass"] = "block"
     strip_user_identifiers: bool = True
+    strip_user_location: bool = True
     tool_definitions: bool = True
     leak_audit: bool = True
 

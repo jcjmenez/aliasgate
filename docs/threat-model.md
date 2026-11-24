@@ -72,6 +72,14 @@ These are known and not fully solved. A deployment must accept or mitigate each 
 8. **Unresolved or altered placeholders.** A model may invent `[PERSON_9]` or mangle a
    placeholder beyond the tolerant pattern. The user then sees a placeholder. This is a visible
    failure, not a leak; it is counted in metrics.
+9. **Fields forwarded unchanged.** The gateway pseudonymises the request fields that carry
+   text for the model, message names, stop sequences and metadata values included, but some
+   fields are sent as they are ([usage](usage.md#fields-forwarded-unchanged)): tool and function
+   names, parameter names, the `enum`, `const`, `default`, `examples` and `title` values of
+   schemas, the keys of objects, and ids. A value detected elsewhere in the request that also
+   appears in one of them makes the leak audit reject the request; a value that appears only
+   there is sent unchanged. The end user's approximate location is removed by default
+   (`policy.strip_user_location`).
 
 ## Security invariants
 

@@ -273,6 +273,7 @@ def _summary(
             "policy: "
             f"unsupported_content={policy.unsupported_content}, "
             f"strip_user_identifiers={_on(policy.strip_user_identifiers)}, "
+            f"strip_user_location={_on(policy.strip_user_location)}, "
             f"tool_definitions={_on(policy.tool_definitions)}, "
             f"leak_audit={_on(policy.leak_audit)}",
             f"propagation: {_on(detection.propagate)}",

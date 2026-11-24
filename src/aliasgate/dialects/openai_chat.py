@@ -1,15 +1,21 @@
 """OpenAI Chat Completions, `POST /v1/chat/completions`, non-streaming (architecture §6).
 
-Request shapes checked on 2026-11-17 against the types of openai-python 3.52.0.
+Request shapes checked on 2026-11-17 against the types of openai-python 3.52.0, and on
+2026-11-24 against openai-python 3.58.0 for the request fields read since slice 20.
 
 Slot order, which placeholder numbering follows:
 
-1. each message in order: `content` (a string, or its `text` and `refusal` parts in order),
-   then the assistant's `refusal`, then each of its `tool_calls`, then the legacy
-   `function_call`;
+1. each message in order: its `name` unless its role is `function`, then `content` (a string,
+   or its `text` and `refusal` parts in order), then the assistant's `refusal`, then each of
+   its `tool_calls`, then the legacy `function_call`;
 2. `prediction.content`;
 3. if the policy says so, every `description` string inside `tools`, then inside the legacy
-   `functions`.
+   `functions`, then inside `response_format`;
+4. `stop`: the string, or each string of the list;
+5. each `metadata` value, in the order of its keys (keys are never slots);
+6. `prompt_cache_key`.
+
+With the policy's `strip_user_location`, `web_search_options.user_location` is removed.
 
 Where the dialect expects a shape and finds another, it raises MalformedRequestError naming the
 position (for example `messages[2].content`), never the content. It validates nothing else;
@@ -32,6 +38,7 @@ from aliasgate.dialects.base import (
     restore_all_strings,
     slots_for_json_strings,
     slots_for_key_strings,
+    slots_for_string_list,
 )
 from aliasgate.dialects.sse import SSEEvent
 from aliasgate.engine import restore
@@ -65,6 +72,8 @@ class _Collector:
 
     def message(self, value: object, where: str) -> None:
         message = _object(value, where)
+        if message.get("role") != "function":  # a function message's name names the function
+            self.optional_string(message, "name", where)
         self.content(message, where)
         self.optional_string(message, "refusal", where)
         self.tool_calls(message.get("tool_calls"), f"{where}.tool_calls")
@@ -152,6 +161,32 @@ class _Collector:
             if not isinstance(definitions, list):
                 raise MalformedRequestError(f"{key}: expected a list")
             self.slots.extend(slots_for_key_strings(definitions, "description"))
+        response_format = body.get("response_format")
+        if response_format is not None:
+            response_format = _object(response_format, "response_format")
+            self.slots.extend(slots_for_key_strings(response_format, "description"))
+
+    def request_fields(self, body: dict[str, Any]) -> None:
+        """`stop`, the `metadata` values and `prompt_cache_key`, in that order."""
+        stop = body.get("stop")
+        if isinstance(stop, str):
+            self.slots.append(key_slot(body, "stop"))
+        elif isinstance(stop, list):
+            self.slots.extend(slots_for_string_list(stop, "stop"))
+        elif stop is not None:
+            raise MalformedRequestError("stop: expected a string or a list")
+        metadata = body.get("metadata")
+        if metadata is not None:
+            metadata = _object(metadata, "metadata")
+            for index, key in enumerate(metadata):
+                if not isinstance(metadata[key], str):  # the key is never named
+                    raise MalformedRequestError(f"metadata: value {index}: expected a string")
+                self.slots.append(key_slot(metadata, key))
+        cache_key = body.get("prompt_cache_key")
+        if cache_key is not None:
+            if not isinstance(cache_key, str):
+                raise MalformedRequestError("prompt_cache_key: expected a string")
+            self.slots.append(key_slot(body, "prompt_cache_key"))
 
 
 def _restore_key(obj: object, key: str, mapping: Mapping, *, json_escape: bool = False) -> None:
@@ -178,11 +213,12 @@ class OpenAIChatDialect:
     name = "openai_chat"
 
     def prepare_request(self, body: dict[str, Any], policy: Policy) -> PreparedRequest:
-        """Collect the slots of `body` in the documented order and strip end-user identifiers.
+        """Collect the slots of `body` in the documented order and strip end-user identifiers
+        and location.
 
         Raises UnsupportedContentError for uninspectable content under policy `block`, and
         MalformedRequestError when a walked field has the wrong shape. Changes `body` only
-        through the returned slots and finalizers, and by removing identifiers.
+        through the returned slots and finalizers, and by removing identifiers and location.
         """
         if not isinstance(body, dict):
             raise MalformedRequestError("body: expected an object")
@@ -197,9 +233,14 @@ class OpenAIChatDialect:
             collector.content(_object(prediction, "prediction"), "prediction")
         if policy.tool_definitions:
             collector.tool_definitions(body)
+        collector.request_fields(body)
         if policy.strip_user_identifiers:
             for key in _USER_IDENTIFIERS:
                 body.pop(key, None)
+        if policy.strip_user_location:
+            options = body.get("web_search_options")
+            if isinstance(options, dict):  # kept even when empty: it turns web search on
+                options.pop("user_location", None)
         return PreparedRequest(collector.slots, collector.finalizers)
 
     def restore_response(self, body: dict[str, Any], mapping: Mapping) -> None:

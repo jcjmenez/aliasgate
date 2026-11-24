@@ -62,6 +62,12 @@ that is not a string), so that nothing it cannot read is forwarded. Do the same 
 Identifier stripping: delete `body["metadata"]["user_id"]` when `strip_user_identifiers`; if
 `metadata` becomes empty, delete it.
 
+**Changed in [slice 20](slice-20-request-fields.md).** Under `tool_definitions`, the strings of
+each tool's `input_examples` and the descriptions inside `output_config.format` follow the tool
+descriptions; `stop_sequences` are slots after them; the `stop_sequence` of a response and of a
+`message_delta` event is restored; and every tool's `user_location` is removed under
+`policy.strip_user_location`.
+
 Why thinking blocks are not touched: they carry a provider signature over their exact content
 and must be sent back unchanged on later turns. Since the model only ever saw placeholders, a
 thinking block contains placeholders, not real values. The gateway does not restore them in the
