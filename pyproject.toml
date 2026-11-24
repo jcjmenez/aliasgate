@@ -1,6 +1,6 @@
 [project]
 name = "aliasgate"
-version = "0.5.0"
+version = "0.6.0"
 description = "Reversible pseudonymization gateway for LLM APIs: the model never sees real customer data, the user never sees placeholders."
 readme = "README.md"
 license = "Apache-2.0"
