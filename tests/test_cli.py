@@ -188,6 +188,18 @@ def test_check_prints_whether_org_tokens_are_on_after_person_tokens(
     assert f"person tokens: on\norg tokens: {shown}\nmetrics:" in out
 
 
+@pytest.mark.parametrize(("value", "shown"), [("true", "on"), ("false", "off")])
+def test_check_prints_whether_user_location_is_stripped_after_user_identifiers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str, shown: str
+) -> None:
+    config = tmp_path / "aliasgate.yaml"
+    config.write_text(f"policy:\n  strip_user_location: {value}\n", encoding="utf-8")
+    code, out, _ = _run(capsys, "check", "--config", str(config))
+    assert code == 0
+    expected = f"strip_user_identifiers=on, strip_user_location={shown}, tool_definitions=on"
+    assert expected in out
+
+
 def test_check_summary_lists_passthrough_entries_and_the_ml_model(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

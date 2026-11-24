@@ -456,7 +456,163 @@ def test_end_to_end_the_same_name_gets_one_placeholder_everywhere() -> None:
     ]
 
 
+# Request fields read since slice 20
+
+
+def _fields_body() -> dict[str, Any]:
+    schema = {"type": "object", "properties": {"x": {"type": "string", "description": "schema"}}}
+    return {
+        "system": "system text",
+        "messages": [{"role": "user", "content": "message text"}],
+        "tools": [
+            {
+                "name": "send",
+                "description": "tool description",
+                "input_schema": {"type": "object"},
+                "input_examples": [{"to": "maria.lopez@example.org", "n": 2, "cc": ["a", "b"]}],
+            }
+        ],
+        "output_config": {"format": {"type": "json_schema", "schema": schema}},
+        "stop_sequences": ["x", "y"],
+    }
+
+
+def test_examples_schema_descriptions_and_stop_sequences_follow_the_tool_descriptions() -> None:
+    body = _fields_body()
+    original = copy.deepcopy(body)
+    prepared = DIALECT.prepare_request(body, Policy())
+    assert prepared.texts() == [
+        "system text",
+        "message text",
+        "tool description",
+        "maria.lopez@example.org",
+        "a",
+        "b",
+        "schema",
+        "x",
+        "y",
+    ]
+    prepared.apply([f"[S_{number}]" for number in range(1, 10)])
+    example = body["tools"][0]["input_examples"][0]
+    assert example == {"to": "[S_4]", "n": 2, "cc": ["[S_5]", "[S_6]"]}
+    assert body["stop_sequences"] == ["[S_8]", "[S_9]"]
+    assert body["tools"][0]["input_schema"] == original["tools"][0]["input_schema"]
+    assert body["output_config"]["format"]["type"] == "json_schema"
+
+
+def test_a_description_inside_input_examples_is_one_slot_among_the_tool_descriptions() -> None:
+    body: dict[str, Any] = {
+        "messages": [],
+        "tools": [
+            {
+                "name": "f",
+                "description": "first",
+                "input_examples": [{"description": "example description", "to": "to"}],
+            },
+            {"name": "g", "description": "second"},
+        ],
+    }
+    assert _texts(body) == ["first", "example description", "second", "to"]
+
+
+def test_with_tool_definitions_off_examples_and_schemas_are_not_read_but_stop_sequences_are() -> (
+    None
+):
+    body = _fields_body()
+    body["output_config"] = "not an object"
+    texts = _texts(body, Policy(tool_definitions=False))
+    assert texts == ["system text", "message text", "x", "y"]
+
+
+def test_null_stop_sequences_and_output_config_add_no_slot() -> None:
+    body: dict[str, Any] = {"messages": [], "stop_sequences": None, "output_config": None}
+    assert _texts(body) == []
+
+
+def test_an_output_config_without_a_format_adds_no_slot() -> None:
+    body: dict[str, Any] = {"messages": [], "output_config": {"effort": "low"}}
+    assert _texts(body) == []
+    assert body["output_config"] == {"effort": "low"}
+
+
+def test_tools_that_are_not_objects_are_skipped_by_the_new_walks() -> None:
+    body: dict[str, Any] = {"messages": [], "tools": ["f", {"name": "g", "input_examples": []}]}
+    assert _texts(body) == []
+    assert body["tools"][0] == "f"
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (
+            {"messages": [], "tools": [{"name": "f", "input_examples": {"to": "maria"}}]},
+            "tools[0].input_examples: expected a list",
+        ),
+        ({"messages": [], "output_config": "maria"}, "output_config: expected an object"),
+        (
+            {"messages": [], "output_config": {"format": "maria"}},
+            "output_config.format: expected an object",
+        ),
+        ({"messages": [], "stop_sequences": "maria"}, "stop_sequences: expected a list"),
+        ({"messages": [], "stop_sequences": ["x", 1]}, "stop_sequences[1]: expected a string"),
+    ],
+)
+def test_request_fields_of_the_wrong_shape_are_malformed(
+    body: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(MalformedRequestError) as excinfo:
+        DIALECT.prepare_request(body, Policy())
+    assert str(excinfo.value) == message
+
+
+def _web_search_tools() -> list[dict[str, Any]]:
+    location = {"type": "approximate", "city": "Springfield", "country": "US"}
+    return [
+        {"type": "web_search_20250305", "name": "web_search", "user_location": location},
+        {
+            "type": "web_search_20260318",
+            "name": "web_search",
+            "max_uses": 2,
+            "user_location": location,
+        },
+    ]
+
+
+def test_web_search_tools_lose_their_user_location_by_default() -> None:
+    body: dict[str, Any] = {"messages": [], "tools": _web_search_tools()}
+    DIALECT.prepare_request(body, Policy())
+    assert body["tools"] == [
+        {"type": "web_search_20250305", "name": "web_search"},
+        {"type": "web_search_20260318", "name": "web_search", "max_uses": 2},
+    ]
+
+
+def test_user_location_is_kept_when_its_stripping_is_off() -> None:
+    body: dict[str, Any] = {"messages": [], "tools": _web_search_tools()}
+    DIALECT.prepare_request(body, Policy(strip_user_location=False))
+    assert body["tools"] == _web_search_tools()
+
+
+def test_user_location_is_removed_with_tool_definitions_off_too() -> None:
+    body: dict[str, Any] = {"messages": [], "tools": _web_search_tools()}
+    DIALECT.prepare_request(body, Policy(tool_definitions=False))
+    assert all("user_location" not in tool for tool in body["tools"])
+
+
 # Response side
+
+
+def test_the_stop_sequence_of_the_answer_is_restored() -> None:
+    body: dict[str, Any] = {"content": [], "stop_sequence": "[PERSON_1]:"}
+    DIALECT.restore_response(body, _mapping())
+    assert body["stop_sequence"] == "Juan P\u00e9rez:"
+
+
+def test_a_stop_sequence_that_is_null_or_not_a_string_is_left_as_it_is() -> None:
+    for value in (None, 3):
+        body: dict[str, Any] = {"content": [], "stop_sequence": value}
+        DIALECT.restore_response(body, _mapping())
+        assert body["stop_sequence"] == value
 
 
 def test_text_blocks_are_restored_and_citations_left_unchanged() -> None:

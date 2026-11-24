@@ -7,6 +7,32 @@ change the configuration or the command line.
 
 ## [Unreleased]
 
+### Added
+
+- `policy.strip_user_location` (`ALIASGATE_POLICY__STRIP_USER_LOCATION`, on by default) removes
+  the end user's approximate location given to hosted web search: `user_location` in OpenAI
+  `web_search_options` and in Anthropic's web search tools. `aliasgate check` prints
+  `strip_user_location=on` or `off`.
+
+### Changed
+
+- The end user's location is no longer forwarded by default, so hosted web search is not
+  localised; `web_search_options` is kept.
+- A message `name` that holds a detected value is numbered before the message's content, and
+  the new slots of stop sequences, metadata values and the cache key after the tool
+  definitions, which changes the numbering of such requests. A request without these fields,
+  or whose fields hold no detected value, is pseudonymised as before.
+
+### Fixed
+
+- Request fields that carry text were forwarded unchanged when a value appeared only there,
+  and made the leak audit reject the whole request when a value detected elsewhere appeared
+  there too (a stop sequence naming a person in the conversation): OpenAI `messages[].name`,
+  `metadata` values, `prompt_cache_key` and `stop`, Anthropic `stop_sequences`, the
+  descriptions of output schemas (OpenAI `response_format`, Anthropic `output_config`) and the
+  strings of Anthropic tool `input_examples`. They are pseudonymised now, and the
+  `stop_sequence` an Anthropic answer repeats is restored.
+
 ## [0.6.0] - 2026-11-24
 
 Shorter forms of an organisation's name. The name without its legal form and each distinctive

@@ -340,6 +340,51 @@ def test_malformed_blocks_and_deltas_pass_unchanged() -> None:
         assert transformer.feed(event)[0] is event
 
 
+def _message_delta(delta: dict[str, Any]) -> SSEEvent:
+    usage = {"output_tokens": 5}
+    return _event({"type": "message_delta", "delta": delta, "usage": usage})
+
+
+def test_the_stop_sequence_of_a_message_delta_is_restored() -> None:
+    event = _message_delta({"stop_reason": "stop_sequence", "stop_sequence": "[PERSON_1]:"})
+    out = _transformer().feed(event)
+    assert len(out) == 1
+    data = json.loads(out[0].data)
+    assert data["delta"] == {
+        "stop_reason": "stop_sequence",
+        "stop_sequence": 'Juan "JP" P\u00e9rez:',
+    }
+    assert data["usage"] == {"output_tokens": 5}
+    assert out[0].event == "message_delta"
+
+
+def test_a_message_delta_without_a_stop_sequence_is_the_original_event() -> None:
+    for delta in ({"stop_reason": "end_turn", "stop_sequence": None}, {"stop_reason": "end_turn"}):
+        event = _message_delta(delta)
+        assert _transformer().feed(event) == [event]
+        assert _transformer().feed(event)[0] is event
+
+
+def test_a_stop_sequence_without_placeholders_leaves_the_event_unchanged() -> None:
+    event = _message_delta({"stop_reason": "stop_sequence", "stop_sequence": "\nUser:"})
+    assert _transformer().feed(event)[0] is event
+
+
+def test_malformed_message_deltas_pass_unchanged() -> None:
+    for data in (
+        {"type": "message_delta", "delta": "x"},
+        {"type": "message_delta", "delta": {"stop_sequence": 3}},
+    ):
+        event = _event(data)
+        assert _transformer().feed(event)[0] is event
+
+
+def test_unknown_placeholders_in_a_stop_sequence_are_counted_as_unresolved() -> None:
+    transformer = _transformer()
+    transformer.feed(_message_delta({"stop_sequence": "[PERSON_9] and [PERSON_1]"}))
+    assert transformer.unresolved == 1
+
+
 def test_unresolved_counts_unknown_placeholders_across_blocks_and_starts() -> None:
     transformer = _transformer()
     events = [

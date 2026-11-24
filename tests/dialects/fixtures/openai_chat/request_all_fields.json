@@ -81,5 +81,10 @@
   "response_format": {
     "type": "json_schema",
     "json_schema": {"name": "answer", "description": "response format description", "schema": {"type": "object"}}
+  },
+  "prompt_cache_key": "cache key",
+  "web_search_options": {
+    "search_context_size": "low",
+    "user_location": {"type": "approximate", "approximate": {"city": "Springfield", "country": "US"}}
   }
 }

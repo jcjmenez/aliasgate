@@ -84,7 +84,7 @@ upstreams:
   anthropic: https://api.anthropic.com
 passthrough: none
 listen: 127.0.0.1 port 8080
-policy: unsupported_content=block, strip_user_identifiers=on, tool_definitions=on, leak_audit=on
+policy: unsupported_content=block, strip_user_identifiers=on, strip_user_location=on, tool_definitions=on, leak_audit=on
 propagation: on
 person tokens: on
 org tokens: on
@@ -529,20 +529,35 @@ Set `detection.org_tokens: false` (or `ALIASGATE_DETECTION__ORG_TOKENS=false`) t
 
 ### Fields forwarded unchanged
 
-The gateway pseudonymises message text, system prompts, tool results, tool-call arguments and
-the `description` values of tool definitions. These fields are forwarded as they are:
+The gateway pseudonymises message text, system prompts, tool results and tool-call arguments.
+It also pseudonymises the participant name of an OpenAI message (`messages[].name`), the stop
+sequences (OpenAI `stop`, Anthropic `stop_sequences`), the values of OpenAI `metadata` and
+`prompt_cache_key`. With `policy.tool_definitions` (on by default) it pseudonymises the
+`description` values of tool definitions and of output schemas (OpenAI `response_format`,
+Anthropic `output_config`), and every string of an Anthropic tool's `input_examples`. When an
+Anthropic answer stops at a stop sequence, the `stop_sequence` it repeats is restored.
 
-- OpenAI `metadata`, and `prompt_cache_key`, which OpenAI recommends in place of `user` and
-  which may therefore hold a per-user id;
-- `web_search_options.user_location` (city, region, timezone);
-- `messages[].name`, tool names, parameter names, `enum` values and the keys of objects inside
-  tool-call arguments;
-- `response_format` schema descriptions and `stop` sequences;
+These fields are forwarded as they are:
+
+- tool and function names, parameter names, and the `enum`, `const`, `default`, `examples` and
+  `title` values of tool and output schemas;
+- the keys of objects: metadata keys, and the keys inside tool-call arguments and input
+  examples;
+- the `name` of a message with the `function` role, which names the function;
+- ids such as `tool_call_id`, `container` or `user_profile_id`;
+- under `strip_user_location: false`, the end user's location;
 - under `unsupported_content: pass`, image, audio and file parts.
 
 End-user identifiers (`user`, `safety_identifier`, Anthropic `metadata.user_id`) are removed by
-default (`policy.strip_user_identifiers`). A detected value inside any forwarded field makes the
-leak audit reject the request.
+default (`policy.strip_user_identifiers`). So is the end user's approximate location given to
+hosted web search (`user_location` in OpenAI `web_search_options` and in Anthropic's web search
+tools), with `policy.strip_user_location`; search results are then not localised.
+`web_search_options` itself is kept, since it turns web search on. A detected value inside any
+forwarded field makes the leak audit reject the request.
+
+A placeholder can be longer than what it replaces (`Ana` becomes `[PERSON_1]`), so a metadata
+value close to OpenAI's 512-character limit may go over it, and the provider then rejects the
+request.
 
 ## 8. Error codes
 
@@ -561,7 +576,7 @@ of the request also holds.
 | `unknown_endpoint` | 404 | `rejected` | The method and path are neither a route nor a passthrough entry. `GET /metrics` answers this when metrics are off. | Use a supported route (section 4), or add a passthrough entry for an endpoint without customer data. |
 | `request_too_large` | 413 | `rejected` | The body is larger than `listen.max_request_bytes` (10 MiB). | Raise the limit, or send less. |
 | `unsupported_content` | 422 | `rejected` | Content the gateway cannot inspect (image, audio, document, file, an unknown block type) under `policy.unsupported_content: block`; the message names the kind. | Remove it, or set `pass` knowing it is forwarded unprotected. |
-| `leak_audit_failed` | 500 | `rejected` | A detected value was still somewhere in the outbound body. Typical causes: a field forwarded unchanged (OpenAI `metadata`, tool names, `enum` values, `model`); `propagate: false`; a variant with the same key that propagation does not replace (`STRASSE` for `Straße`, decomposed accents, full-width letters). | Move the value out of that field, turn propagation on, or write the value consistently. `policy.leak_audit: false` turns the audit off, which removes the last check before data leaves. |
+| `leak_audit_failed` | 500 | `rejected` | A detected value was still somewhere in the outbound body. Typical causes: a field forwarded unchanged (tool names, a schema `enum` value, `model`); `propagate: false`; a variant with the same key that propagation does not replace (`STRASSE` for `Straße`, decomposed accents, full-width letters). | Move the value out of that field, turn propagation on, or write the value consistently. `policy.leak_audit: false` turns the audit off, which removes the last check before data leaves. |
 | `pseudonymization_failed` | 500 | `gateway_error` | A detector raised; the log line names it. | Check the `request failed` log line (`detector`); for the ML detector, its installation and memory. |
 | `internal_error` | 500 | `gateway_error` | An unexpected failure in the gateway, the leak audit itself included. Nothing was forwarded. | Look up the log lines by request id, and report the exception class. |
 | `restoration_failed` | 502 | `gateway_error` | The provider's answer could not be restored; it is never returned un-restored. | Look up the log lines by request id, and report the exception class. |

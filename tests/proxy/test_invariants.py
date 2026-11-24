@@ -59,6 +59,14 @@ class Dialect:
             part = {"type": "image", "source": {"type": "url", "url": "https://example.com/a.png"}}
         return self.request([part])
 
+    def request_fields(self, value: str) -> dict[str, Any]:
+        """The top-level request fields read since slice 20, each holding `value`."""
+        if self.name == "openai":
+            return {"stop": [value], "metadata": {"note": value}, "prompt_cache_key": value}
+        location = {"type": "approximate", "city": value}
+        tool = {"type": "web_search_20250305", "name": "web_search", "user_location": location}
+        return {"stop_sequences": [value], "tools": [tool]}
+
     def malformed(self) -> dict[str, Any]:
         return {"model": "example", "messages": "Juan Pérez"}
 
@@ -341,8 +349,14 @@ async def test_logs_and_metrics_contain_no_text(
     route.respond(429, json={"error": {"message": "Too many requests for [PERSON_1]"}})
     await client.post(dialect.path, json=dialect.request(TEXT), headers=headers)
     await client.post(dialect.path, json=dialect.image(), headers=headers)
-    await client.post(dialect.path, json=dialect.request(TEXT, metadata={"note": "Juan Pérez"}),
+    # An unknown top-level field, which no dialect reads, makes the leak audit fail.
+    await client.post(dialect.path, json=dialect.request(TEXT, x_note="Juan Pérez"),
                       headers=headers)  # fmt: skip
+    # The request fields read since slice 20, holding the dictionary values.
+    route.respond(json=dialect.reply("ok"))
+    fields = dialect.request(TEXT, **dialect.request_fields("Juan Pérez"))
+    fielded = await client.post(dialect.path, json=fields, headers=headers)
+    assert fielded.status_code == 200
     await client.post("/v1/Juan Pérez/juan.perez@example.com", json=dialect.request(TEXT),
                       headers=headers)  # fmt: skip
     metrics = await client.get("/metrics")

@@ -1,7 +1,8 @@
 """Anthropic Messages, `POST /v1/messages` and `POST /v1/messages/count_tokens` (architecture §6).
 
 Request, response and streaming shapes checked on 2026-11-18 against the Messages API
-reference, the streaming guide and the errors page on platform.claude.com.
+reference, the streaming guide and the errors page on platform.claude.com, and on 2026-11-24
+against anthropic-sdk-python 2.13.0 for the request fields read since slice 20.
 
 Slot order, which placeholder numbering follows:
 
@@ -9,7 +10,12 @@ Slot order, which placeholder numbering follows:
 2. each message in order (any role): `content` as a string, or its blocks in order, where a
    `text` block is one slot, a `tool_use` block gives a slot per string value of its `input`,
    and a `tool_result` block gives its `content` string, or its inner blocks by the same rules;
-3. if the policy says so, every `description` string inside `tools`.
+3. if the policy says so, every `description` string inside `tools`, then every other string
+   value of each tool's `input_examples`, then every `description` string inside
+   `output_config.format`;
+4. each string of `stop_sequences`.
+
+With the policy's `strip_user_location`, every tool loses its `user_location`.
 
 `thinking` and `redacted_thinking` blocks carry a provider signature over their exact content
 and are never slots, in either direction. Every other block type is uninspectable content.
@@ -32,6 +38,8 @@ from aliasgate.dialects.base import (
     restore_all_strings,
     slots_for_json_strings,
     slots_for_key_strings,
+    slots_for_string_list,
+    slots_for_strings_not_under,
 )
 from aliasgate.dialects.sse import SSEEvent
 from aliasgate.engine import count_unresolved, restore
@@ -128,11 +136,44 @@ class _Collector:
 
     def tool_definitions(self, body: dict[str, Any]) -> None:
         definitions = body.get("tools")
-        if definitions is None:
+        if definitions is not None:
+            if not isinstance(definitions, list):
+                raise MalformedRequestError("tools: expected a list")
+            self.slots.extend(slots_for_key_strings(definitions, "description"))
+            self.input_examples(definitions)
+        config = body.get("output_config")
+        if config is not None:
+            config = _object(config, "output_config")
+            output_format = config.get("format")
+            if output_format is not None:
+                output_format = _object(output_format, "output_config.format")
+                self.slots.extend(slots_for_key_strings(output_format, "description"))
+
+    def input_examples(self, definitions: list[Any]) -> None:
+        """Every string of each tool's `input_examples`, except those under a `description`
+        key, which are already slots as tool descriptions."""
+        for index, tool in enumerate(definitions):
+            if not isinstance(tool, dict) or (examples := tool.get("input_examples")) is None:
+                continue
+            if not isinstance(examples, list):
+                raise MalformedRequestError(f"tools[{index}].input_examples: expected a list")
+            self.slots.extend(slots_for_strings_not_under(examples, "description"))
+
+    def stop_sequences(self, body: dict[str, Any]) -> None:
+        value = body.get("stop_sequences")
+        if value is None:
             return
-        if not isinstance(definitions, list):
-            raise MalformedRequestError("tools: expected a list")
-        self.slots.extend(slots_for_key_strings(definitions, "description"))
+        if not isinstance(value, list):
+            raise MalformedRequestError("stop_sequences: expected a list")
+        self.slots.extend(slots_for_string_list(value, "stop_sequences"))
+
+
+def _strip_user_location(body: dict[str, Any]) -> None:
+    tools = body.get("tools")
+    if isinstance(tools, list):
+        for tool in tools:
+            if isinstance(tool, dict):
+                tool.pop("user_location", None)
 
 
 def _strip_user_id(body: dict[str, Any]) -> None:
@@ -149,12 +190,13 @@ class AnthropicMessagesDialect:
     name = "anthropic_messages"
 
     def prepare_request(self, body: dict[str, Any], policy: Policy) -> PreparedRequest:
-        """Collect the slots of `body` in the documented order and strip `metadata.user_id`.
+        """Collect the slots of `body` in the documented order and strip `metadata.user_id`
+        and the tools' `user_location`.
 
         Raises UnsupportedContentError for uninspectable content under policy `block`, and
         MalformedRequestError when a walked field has the wrong shape. Changes `body` only
-        through the returned slots, and by removing the identifier. Thinking blocks are never
-        read or written.
+        through the returned slots, and by removing the identifier and the location. Thinking
+        blocks are never read or written.
         """
         if not isinstance(body, dict):
             raise MalformedRequestError("body: expected an object")
@@ -168,16 +210,22 @@ class AnthropicMessagesDialect:
             collector.content(_object(message, where), where)
         if policy.tool_definitions:
             collector.tool_definitions(body)
+        collector.stop_sequences(body)
         if policy.strip_user_identifiers:
             _strip_user_id(body)
+        if policy.strip_user_location:
+            _strip_user_location(body)
         return PreparedRequest(collector.slots, [])
 
     def restore_response(self, body: dict[str, Any], mapping: Mapping) -> None:
-        """Restore, in place, the `text` of text blocks and every string of `tool_use` inputs.
+        """Restore, in place, the `text` of text blocks, every string of `tool_use` inputs and
+        the `stop_sequence` the model met.
 
         Everything else (thinking blocks, citations, server tool blocks, usage, ids) is left
         untouched, and so is a body without `content`; use `restore_all_strings` for errors.
         """
+        if isinstance(stop_sequence := body.get("stop_sequence"), str):
+            body["stop_sequence"] = restore(stop_sequence, mapping)
         content = body.get("content")
         if not isinstance(content, list):
             return
@@ -219,8 +267,10 @@ class AnthropicStreamTransformer:
     Each `text` and `tool_use` content block has its own `StreamRestorer`, keyed by the block
     `index`, so placeholders split across deltas are restored and blocks never mix. Text still
     held when a block stops, at `message_stop` or at `end()` is sent in a synthetic
-    `content_block_delta` just before; nothing held is emitted any other way. Thinking deltas,
-    signatures, citations and every other event pass unchanged, as the original object.
+    `content_block_delta` just before; nothing held is emitted any other way. The
+    `stop_sequence` of a `message_delta` is restored whole, since it never arrives in parts.
+    Thinking deltas, signatures, citations and every other event pass unchanged, as the
+    original object.
     """
 
     def __init__(self, mapping: Mapping) -> None:
@@ -240,6 +290,8 @@ class AnthropicStreamTransformer:
         kind = data.get("type")
         if kind == "message_stop":
             return [*self._flush_all(), event]
+        if kind == "message_delta":
+            return [self._message_delta(event, data)]
         index = _index(data)
         if index is None:
             return [event]
@@ -304,6 +356,19 @@ class AnthropicStreamTransformer:
         if restored == value:
             return event
         delta[key] = restored
+        return SSEEvent(event.event, _dumps(data), event.raw_fields)
+
+    def _message_delta(self, event: SSEEvent, data: dict[str, Any]) -> SSEEvent:
+        """The event with `delta.stop_sequence` restored; the original event if it has none."""
+        delta = data.get("delta")
+        if not isinstance(delta, dict) or not isinstance(value := delta.get("stop_sequence"), str):
+            return event
+        self._settled += count_unresolved(value, self._mapping)
+        self._count()
+        restored = restore(value, self._mapping)
+        if restored == value:
+            return event
+        delta["stop_sequence"] = restored
         return SSEEvent(event.event, _dumps(data), event.raw_fields)
 
     def _flush(self, index: int) -> list[SSEEvent]:

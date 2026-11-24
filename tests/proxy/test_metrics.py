@@ -160,9 +160,9 @@ async def test_a_failed_pseudonymisation_is_a_gateway_error(
 async def test_a_value_in_a_field_no_dialect_processes_fails_the_leak_audit(
     client: httpx.AsyncClient, upstream: respx.MockRouter
 ) -> None:
-    # OpenAI `metadata` is forwarded unchanged; the name in it was detected in the message.
+    # No dialect reads an unknown top-level field; the name in it was detected in the message.
     route = upstream.post(CHAT).respond(json=chat_response("ok"))
-    body = chat_request(TEXT, metadata={"customer": "Juan Pérez"})
+    body = chat_request(TEXT, x_note="Juan Pérez")
     response = await client.post(CHAT, json=body)
     assert response.status_code == 500
     assert response.json()["error"]["code"] == "leak_audit_failed"
@@ -184,9 +184,9 @@ async def test_the_leak_audit_can_be_turned_off(
 ) -> None:
     route = upstream.post(CHAT).respond(json=chat_response("ok"))
     async with make_client(_with(settings, "policy", leak_audit=False)) as client:
-        body = chat_request(TEXT, metadata={"customer": "Juan Pérez"})
+        body = chat_request(TEXT, x_note="Juan Pérez")
         assert (await client.post(CHAT, json=body)).status_code == 200
-    assert json.loads(route.calls.last.request.content)["metadata"] == {"customer": "Juan Pérez"}
+    assert json.loads(route.calls.last.request.content)["x_note"] == "Juan Pérez"
 
 
 async def test_disabled_metrics_are_not_served(

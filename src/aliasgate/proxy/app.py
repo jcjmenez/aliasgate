@@ -198,6 +198,7 @@ def _policy(settings: PolicySettings) -> Policy:
     return Policy(
         unsupported_content=settings.unsupported_content,
         strip_user_identifiers=settings.strip_user_identifiers,
+        strip_user_location=settings.strip_user_location,
         tool_definitions=settings.tool_definitions,
     )
 

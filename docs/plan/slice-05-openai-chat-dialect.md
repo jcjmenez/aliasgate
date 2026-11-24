@@ -128,6 +128,12 @@ Fields never touched: `model`, `messages[].role`, `messages[].name`, `tool_call_
 function names, parameter schemas apart from descriptions, `response_format`, `stop`, `logit_bias`,
 sampling parameters, `stream`, `stream_options`.
 
+**Changed in [slice 20](slice-20-request-fields.md).** A message's `name` (except for the
+`function` role) is a slot before its content; `response_format` descriptions follow the tool
+descriptions under `tool_definitions`; `stop`, the `metadata` values and `prompt_cache_key`
+are slots after them, in that order; and `web_search_options.user_location` is removed under
+`policy.strip_user_location`.
+
 ### `openai_chat.py`: response
 
 `restore_response(body, mapping)` mutates the body in place. For each choice:

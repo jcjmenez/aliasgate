@@ -64,6 +64,7 @@ DEFAULTS = {
     "policy": {
         "unsupported_content": "block",
         "strip_user_identifiers": True,
+        "strip_user_location": True,
         "tool_definitions": True,
         "leak_audit": True,
     },
@@ -177,6 +178,18 @@ def test_org_tokens_are_on_by_default_and_can_be_set_in_the_file_and_from_the_en
     assert load_settings(path, env=env).detection.org_tokens is True
     env = {"ALIASGATE_DETECTION__ORG_TOKENS": "false"}
     assert load_settings(None, env=env).detection.org_tokens is False
+
+
+def test_user_location_stripping_is_on_by_default_and_can_be_set_in_the_file_and_environment(
+    tmp_path: Path,
+) -> None:
+    assert load_settings(None, env={}).policy.strip_user_location is True
+    path = _config(tmp_path, "policy:\n  strip_user_location: false\n")
+    assert load_settings(path, env={}).policy.strip_user_location is False
+    env = {"ALIASGATE_POLICY__STRIP_USER_LOCATION": "true"}
+    assert load_settings(path, env=env).policy.strip_user_location is True
+    env = {"ALIASGATE_POLICY__STRIP_USER_LOCATION": "false"}
+    assert load_settings(None, env=env).policy.strip_user_location is False
 
 
 def test_unrelated_environment_variables_are_ignored() -> None:

@@ -71,10 +71,13 @@ detection:
 policy:
   unsupported_content: block # block | pass (pass forwards images and files unprotected)
   strip_user_identifiers: true
-  tool_definitions: true     # pseudonymise "description" values in tool definitions
+  strip_user_location: true  # remove the end user's location given to hosted web search
+  # Pseudonymise "description" values in tool definitions and output schemas, and the
+  # strings of Anthropic tool input examples.
+  tool_definitions: true
   # Before forwarding, search every string value of the outbound body for the detected values
   # and reject the request (500 leak_audit_failed) if one is still there, for example in a
-  # field the gateway forwards unchanged (OpenAI metadata, tool names, enum values).
+  # field the gateway forwards unchanged (tool names, enum values, object keys).
   leak_audit: true
 
 logging:
