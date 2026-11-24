@@ -93,8 +93,8 @@ def test_version_prints_the_package_version_and_exits_0(
     assert err == ""
 
 
-def test_package_version_is_0_5_0_and_matches_the_installed_distribution() -> None:
-    assert aliasgate.__version__ == "0.5.0"
+def test_package_version_is_0_6_0_and_matches_the_installed_distribution() -> None:
+    assert aliasgate.__version__ == "0.6.0"
     assert importlib.metadata.version("aliasgate") == aliasgate.__version__
 
 

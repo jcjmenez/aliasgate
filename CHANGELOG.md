@@ -7,6 +7,11 @@ change the configuration or the command line.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-24
+
+Shorter forms of an organisation's name. The name without its legal form and each distinctive
+word on its own, which 0.5.0 forwarded unchanged, are replaced as variants of the organisation.
+
 ### Added
 
 - An organisation mentions corpus for the evaluation harness (`tests/eval/corpus/orgs.*.jsonl`,
@@ -171,7 +176,8 @@ it has not run in production yet. Read the threat model before relying on it.
   offline), non-root, with no configuration inside.
 - Documentation: usage, deployment, architecture, threat model, evaluation.
 
-[Unreleased]: https://github.com/jcjmenez/aliasgate/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/jcjmenez/aliasgate/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/jcjmenez/aliasgate/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jcjmenez/aliasgate/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jcjmenez/aliasgate/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jcjmenez/aliasgate/compare/v0.2.0...v0.3.0
