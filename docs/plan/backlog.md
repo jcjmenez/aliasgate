@@ -146,6 +146,18 @@ surface detected elsewhere in the request if it appears in a value of these fiel
 per-field policy options (strip, pseudonymise, forward), defaulting to the current behaviour,
 with the same review for the Anthropic dialect.
 
+**Cut into [slice 20](slice-20-request-fields.md).** A reproduction through the gateway found
+each of these fields, and a few more, forwarded unchanged when a value appears only there, and
+the whole request rejected by the leak audit when a value detected elsewhere appears there too
+(a stop sequence naming a person in the conversation). Slice 20 pseudonymises OpenAI
+`messages[].name`, `metadata` values, `prompt_cache_key` and `stop`, Anthropic
+`stop_sequences` (restoring the `stop_sequence` the answer repeats), output schema descriptions
+and Anthropic tool `input_examples`, and removes `user_location` by default
+(`policy.strip_user_location`). Still open after it: `enum`, `const`, `default`, `examples` and
+`title` values in tool and output schemas (exact values for strict decoding, and two values
+with the same key would become equal placeholders), object keys (metadata keys, the keys of
+tool-call arguments), and an option to forward a field unchanged.
+
 ## 11. Operations
 
 OpenTelemetry tracing (attributes limited to counts and types), Helm chart, hot reload of
