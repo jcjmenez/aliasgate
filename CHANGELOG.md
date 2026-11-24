@@ -7,6 +7,12 @@ change the configuration or the command line.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-24
+
+Request fields that 0.6.0 forwarded without reading. Message names, metadata values, stop
+sequences, the cache key and output schema descriptions are pseudonymised, and the end user's
+location is no longer given to hosted web search unless `policy.strip_user_location` is off.
+
 ### Added
 
 - `policy.strip_user_location` (`ALIASGATE_POLICY__STRIP_USER_LOCATION`, on by default) removes
@@ -202,7 +208,8 @@ it has not run in production yet. Read the threat model before relying on it.
   offline), non-root, with no configuration inside.
 - Documentation: usage, deployment, architecture, threat model, evaluation.
 
-[Unreleased]: https://github.com/jcjmenez/aliasgate/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/jcjmenez/aliasgate/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/jcjmenez/aliasgate/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jcjmenez/aliasgate/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jcjmenez/aliasgate/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jcjmenez/aliasgate/compare/v0.3.0...v0.4.0
