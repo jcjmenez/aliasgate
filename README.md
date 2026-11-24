@@ -17,7 +17,7 @@ answer. **The model never sees real data. The user never sees placeholders.**
  "Dear Juan Pérez, ..." ◀──    restore               ◀──   "Dear [PERSON_1], ..."
 ```
 
-> **Status: alpha (0.6.0).** The gateway pseudonymises OpenAI Chat Completions and Anthropic
+> **Status: alpha (0.7.0).** The gateway pseudonymises OpenAI Chat Completions and Anthropic
 > Messages requests, streaming and tool calls included, with rules, company dictionaries and an
 > optional local ML model, and restores the answers. It has not run in production yet. Start
 > with the [usage guide](https://github.com/jcjmenez/aliasgate/blob/main/docs/usage.md).
