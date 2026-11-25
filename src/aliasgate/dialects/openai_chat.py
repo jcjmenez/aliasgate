@@ -7,13 +7,16 @@ Slot order, which placeholder numbering follows:
 
 1. each message in order: its `name` unless its role is `function`, then `content` (a string,
    or its `text` and `refusal` parts in order), then the assistant's `refusal`, then each of
-   its `tool_calls`, then the legacy `function_call`;
+   its `tool_calls`, then the legacy `function_call`; the arguments of a call give every key
+   and every string value, each key right before its value;
 2. `prediction.content`;
 3. if the policy says so, every `description` string inside `tools`, then inside the legacy
    `functions`, then inside `response_format`;
 4. `stop`: the string, or each string of the list;
-5. each `metadata` value, in the order of its keys (keys are never slots);
+5. each `metadata` key, then its value, in key order;
 6. `prompt_cache_key`.
+
+Keys of tool-call arguments and of `metadata` are label slots, and are renamed in place.
 
 With the policy's `strip_user_location`, `web_search_options.user_location` is removed.
 
@@ -36,8 +39,8 @@ from aliasgate.dialects.base import (
     UnsupportedContentError,
     key_slot,
     restore_all_strings,
-    slots_for_json_strings,
     slots_for_key_strings,
+    slots_for_keys_and_strings,
     slots_for_string_list,
 )
 from aliasgate.dialects.sse import SSEEvent
@@ -125,17 +128,19 @@ class _Collector:
                 raise MalformedRequestError(f"{at}.type: expected a string")
 
     def arguments(self, function: dict[str, Any], where: str) -> None:
-        """JSON object or array arguments: a slot per string value, re-serialised afterwards.
-        Anything else (a bare JSON scalar, invalid JSON): one slot on the raw string."""
+        """JSON object or array arguments: a slot per key and string value, keys renamed and
+        the arguments re-serialised afterwards. Anything else (a bare JSON scalar, invalid
+        JSON): one slot on the raw string."""
         raw = function.get("arguments")
+        where = f"{where}.arguments"
         if not isinstance(raw, str):
-            raise MalformedRequestError(f"{where}.arguments: expected a string")
+            raise MalformedRequestError(f"{where}: expected a string")
         try:
             parsed = json.loads(raw)
         except (ValueError, RecursionError):
             parsed = None
         if isinstance(parsed, dict | list):
-            self.slots.extend(slots_for_json_strings(parsed))
+            self.slots.extend(slots_for_keys_and_strings(parsed, self.finalizers, where))
             self.finalizers.append(partial(_write_json, function, "arguments", parsed))
         else:
             self.slots.append(key_slot(function, "arguments"))
@@ -167,7 +172,7 @@ class _Collector:
             self.slots.extend(slots_for_key_strings(response_format, "description"))
 
     def request_fields(self, body: dict[str, Any]) -> None:
-        """`stop`, the `metadata` values and `prompt_cache_key`, in that order."""
+        """`stop`, the `metadata` keys and values and `prompt_cache_key`, in that order."""
         stop = body.get("stop")
         if isinstance(stop, str):
             self.slots.append(key_slot(body, "stop"))
@@ -181,7 +186,7 @@ class _Collector:
             for index, key in enumerate(metadata):
                 if not isinstance(metadata[key], str):  # the key is never named
                     raise MalformedRequestError(f"metadata: value {index}: expected a string")
-                self.slots.append(key_slot(metadata, key))
+            self.slots.extend(slots_for_keys_and_strings(metadata, self.finalizers, "metadata"))
         cache_key = body.get("prompt_cache_key")
         if cache_key is not None:
             if not isinstance(cache_key, str):

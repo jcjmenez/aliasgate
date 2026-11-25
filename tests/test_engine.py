@@ -26,6 +26,7 @@ from aliasgate.types import (
     PRIORITY_LITERAL,
     PRIORITY_ML,
     PRIORITY_PROPAGATION,
+    PRIORITY_RULE,
     Span,
 )
 from fakes import FailingDetector, WordListDetector
@@ -1523,3 +1524,134 @@ def test_organisation_words_nobody_detected_are_searched_once_per_text() -> None
     elapsed = time.perf_counter() - started
     assert len(batch.mapping) == 1000
     assert elapsed < 15
+
+
+# Label slots and contextual detectors (slice 21) ---------------------------------------------
+
+
+class _Recording:
+    """Wraps a detector and records, in a shared log, the name and text of every call."""
+
+    def __init__(self, detector: WordListDetector | RuleDetector, log: list[tuple[str, str]]):
+        self.name = detector.name
+        self._detector = detector
+        self._log = log
+
+    def detect(self, text: str) -> list[Span]:
+        self._log.append((self.name, text))
+        return list(self._detector.detect(text))
+
+
+def _contextual(log: list[tuple[str, str]] | None = None) -> _Recording:
+    words = WordListDetector({"Ana Ruiz": "PERSON"}, name="context")
+    return _Recording(words, [] if log is None else log)
+
+
+def test_contextual_detectors_run_after_the_others_on_text_slots_only() -> None:
+    log: list[tuple[str, str]] = []
+    words = _Recording(WordListDetector(WORDS, name="words"), log)
+    engine = Pseudonymizer([words], contextual=[_contextual(log)])
+    engine.pseudonymize(["text one", "label", "text two"], labels={1})
+    assert log == [
+        ("words", "text one"),
+        ("context", "text one"),
+        ("words", "label"),
+        ("words", "text two"),
+        ("context", "text two"),
+    ]
+
+
+def test_a_label_that_only_a_contextual_detector_would_find_is_not_replaced() -> None:
+    engine = Pseudonymizer([], contextual=[_contextual()])
+    assert engine.pseudonymize(["Ana Ruiz"], labels=[0]).texts == ("Ana Ruiz",)
+    assert engine.pseudonymize(["Ana Ruiz"]).texts == ("[PERSON_1]",)
+
+
+def test_a_label_is_replaced_by_propagation_when_a_text_slot_holds_the_same_value() -> None:
+    engine = Pseudonymizer([], contextual=[_contextual()])
+    batch = engine.pseudonymize(["Ana Ruiz", "Asigna el ticket a Ana Ruiz"], labels={0})
+    assert batch.texts == ("[PERSON_1]", "Asigna el ticket a [PERSON_1]")
+    assert dict(batch.stats.entities_by_type_and_source) == {
+        ("PERSON", "propagation"): 1,
+        ("PERSON", "context"): 1,
+    }
+
+
+def test_the_dictionary_and_the_rules_run_on_label_slots() -> None:
+    engine = Pseudonymizer(
+        [DictionaryDetector([Term("Juan Pérez", "PERSON")]), RuleDetector()],
+        contextual=[_contextual()],
+    )
+    batch = engine.pseudonymize(["maria.lopez@example.org", "Juan Pérez"], labels={0, 1})
+    assert batch.texts == ("[EMAIL_1]", "[PERSON_1]")
+
+
+def test_person_linking_reaches_label_slots() -> None:
+    engine = Pseudonymizer(
+        [DictionaryDetector([Term("Juan Pérez", "PERSON")])],
+        person_tokens=True,
+        contextual=[_contextual()],
+    )
+    batch = engine.pseudonymize(["Escribe a Juan Pérez.", "Juan"], labels={1})
+    assert batch.texts == ("Escribe a [PERSON_1].", "[PERSON_1_B]")
+
+
+@pytest.mark.parametrize("labels", [{1}, {-1}, {0, 5}])
+def test_a_label_outside_the_texts_raises_value_error_without_text(labels: set[int]) -> None:
+    engine = Pseudonymizer([], contextual=[_contextual()])
+    with pytest.raises(ValueError, match="labels") as excinfo:
+        engine.pseudonymize(["Ana Ruiz"], labels=labels)
+    assert "Ana" not in str(excinfo.value)
+    with pytest.raises(ValueError, match="labels"):
+        engine.analyze(["Ana Ruiz"], labels=labels)
+
+
+def test_without_labels_a_contextual_detector_gives_the_output_of_an_ordinary_one() -> None:
+    texts = ["Ana Ruiz met Alice at ACME.", "ana ruiz and Bob", "Ana Ruiz"]
+    plain = Pseudonymizer([WordListDetector(WORDS), WordListDetector({"Ana Ruiz": "PERSON"})])
+    split = Pseudonymizer(
+        [WordListDetector(WORDS)], contextual=[WordListDetector({"Ana Ruiz": "PERSON"})]
+    )
+    assert split.pseudonymize(texts).texts == plain.pseudonymize(texts).texts
+    assert (
+        split.pseudonymize(texts).mapping.entities() == plain.pseudonymize(texts).mapping.entities()
+    )
+    assert split.pseudonymize(texts, labels=()).texts == plain.pseudonymize(texts).texts
+
+
+def test_detectors_lists_the_literal_detector_then_detectors_then_contextual() -> None:
+    words = WordListDetector(WORDS, name="words")
+    contextual = _contextual()
+    detectors = Pseudonymizer([words], contextual=[contextual]).detectors
+    assert [detector.name for detector in detectors] == ["literal", "words", "context"]
+    assert detectors[1] is words
+    assert detectors[2] is contextual
+
+
+def test_a_contextual_detector_is_timed_even_when_every_text_is_a_label() -> None:
+    log: list[tuple[str, str]] = []
+    engine = Pseudonymizer([WordListDetector(WORDS)], contextual=[_contextual(log)])
+    batch = engine.pseudonymize(["Ana Ruiz"], labels={0})
+    assert log == []
+    assert set(batch.stats.detector_seconds) == {"literal", "fake", "context"}
+    assert batch.stats.detector_seconds["context"] == 0.0
+
+
+def test_a_failing_contextual_detector_fails_closed() -> None:
+    engine = Pseudonymizer([], contextual=[FailingDetector()])
+    with pytest.raises(DetectionError):
+        engine.pseudonymize(["Ana Ruiz"])
+    assert engine.pseudonymize(["Ana Ruiz"], labels={0}).texts == ("Ana Ruiz",)
+
+
+def test_analyze_with_labels_gives_the_spans_pseudonymize_replaces() -> None:
+    engine = Pseudonymizer([RuleDetector()], contextual=[_contextual()])
+    texts = ["Ana Ruiz", "maria.lopez@example.org", "Asigna a Ana Ruiz"]
+    spans = engine.analyze(texts, labels={0, 1})
+    assert spans == [
+        [Span(0, 8, "PERSON", 1.0, "propagation", PRIORITY_PROPAGATION)],
+        [Span(0, 23, "EMAIL", 1.0, "rules", PRIORITY_RULE)],
+        [Span(9, 17, "PERSON", 0.9, "context", PRIORITY_ML)],
+    ]
+    batch = engine.pseudonymize(texts, labels={0, 1})
+    assert batch.texts == ("[PERSON_1]", "[EMAIL_1]", "Asigna a [PERSON_1]")

@@ -144,23 +144,39 @@ def test_tool_use_input_strings_are_slots_in_depth_first_order_and_replaced_in_p
     body = _load("request_all_blocks.json")
     prepared = DIALECT.prepare_request(body, Policy())
     texts = prepared.texts()
-    assert texts[4:8] == ["juan.perez@example.com", "Dear Juan Pérez", "Hello", "Regards"]
+    assert texts[4:14] == [
+        "to",
+        "juan.perez@example.com",
+        "body",
+        "greeting",
+        "Dear Juan Pérez",
+        "lines",
+        "Hello",
+        "Regards",
+        "urgent",
+        "copies",
+    ]
     new = [*texts]
-    new[4:8] = ["[EMAIL_1]", "Dear [PERSON_1]", "Hi", "Bye"]
+    new[4:14] = ["T", "[EMAIL_1]", "B", "G", "Dear [PERSON_1]", "L", "Hi", "Bye", "U", "C"]
     prepared.apply(new)
-    assert body["messages"][1]["content"][3]["input"] == {
-        "to": "[EMAIL_1]",
-        "body": {"greeting": "Dear [PERSON_1]", "lines": ["Hi", "Bye"]},
-        "urgent": True,
-        "copies": 2,
+    tool_input = body["messages"][1]["content"][3]["input"]
+    assert tool_input == {
+        "T": "[EMAIL_1]",
+        "B": {"G": "Dear [PERSON_1]", "L": ["Hi", "Bye"]},
+        "U": True,
+        "C": 2,
     }
+    assert list(tool_input) == ["T", "B", "U", "C"]
+    assert list(tool_input["B"]) == ["G", "L"]
 
 
-def test_tool_use_keys_are_never_slots() -> None:
+def test_tool_use_keys_are_label_slots_before_their_values() -> None:
     body = _user(
         [{"type": "tool_use", "id": "t", "name": "f", "input": {"Alice Johnson": "x", "y": {}}}]
     )
-    assert _texts(body) == ["x"]
+    prepared = DIALECT.prepare_request(body, Policy())
+    assert prepared.texts() == ["Alice Johnson", "x", "y"]
+    assert prepared.labels() == {0, 2}
 
 
 def test_tool_result_with_string_content_is_one_slot() -> None:
@@ -173,7 +189,7 @@ def test_tool_result_with_string_content_is_one_slot() -> None:
 
 def test_tool_result_with_a_list_of_text_blocks_gives_a_slot_per_block() -> None:
     body = _load("request_all_blocks.json")
-    assert _texts(body)[8:11] == [
+    assert _texts(body)[14:17] == [
         "Sent to juan.perez@example.com",
         "Delivered to Juan Pérez",
         "Receipt 42",
@@ -289,7 +305,7 @@ def test_with_tool_definitions_off_no_tool_slot_exists() -> None:
     body = _load("request_all_blocks.json")
     texts = _texts(body, Policy(tool_definitions=False))
     assert texts[-1] == "Thanks."
-    assert len(texts) == 12
+    assert len(texts) == 18
 
 
 def test_tool_definitions_are_not_inspected_when_the_policy_turns_them_off() -> None:
@@ -303,10 +319,16 @@ def test_slot_order_is_system_then_messages_then_tools() -> None:
         "Never reveal the address of Alice Johnson.",
         "Please email Juan Pérez at juan.perez@example.com.",
         "Sending the email now.",
+        "to",
         "juan.perez@example.com",
+        "body",
+        "greeting",
         "Dear Juan Pérez",
+        "lines",
         "Hello",
         "Regards",
+        "urgent",
+        "copies",
         "Sent to juan.perez@example.com",
         "Delivered to Juan Pérez",
         "Receipt 42",
@@ -485,17 +507,21 @@ def test_examples_schema_descriptions_and_stop_sequences_follow_the_tool_descrip
         "system text",
         "message text",
         "tool description",
+        "to",
         "maria.lopez@example.org",
+        "n",
+        "cc",
         "a",
         "b",
         "schema",
         "x",
         "y",
     ]
-    prepared.apply([f"[S_{number}]" for number in range(1, 10)])
+    prepared.apply([f"[S_{number}]" for number in range(1, 13)])
     example = body["tools"][0]["input_examples"][0]
-    assert example == {"to": "[S_4]", "n": 2, "cc": ["[S_5]", "[S_6]"]}
-    assert body["stop_sequences"] == ["[S_8]", "[S_9]"]
+    assert example == {"[S_4]": "[S_5]", "[S_6]": 2, "[S_7]": ["[S_8]", "[S_9]"]}
+    assert list(example) == ["[S_4]", "[S_6]", "[S_7]"]
+    assert body["stop_sequences"] == ["[S_11]", "[S_12]"]
     assert body["tools"][0]["input_schema"] == original["tools"][0]["input_schema"]
     assert body["output_config"]["format"]["type"] == "json_schema"
 
@@ -512,7 +538,7 @@ def test_a_description_inside_input_examples_is_one_slot_among_the_tool_descript
             {"name": "g", "description": "second"},
         ],
     }
-    assert _texts(body) == ["first", "example description", "second", "to"]
+    assert _texts(body) == ["first", "example description", "second", "description", "to", "to"]
 
 
 def test_with_tool_definitions_off_examples_and_schemas_are_not_read_but_stop_sequences_are() -> (
@@ -735,3 +761,98 @@ def test_error_body_has_the_anthropic_error_shape(status: int, family: str) -> N
 def test_error_body_example_from_the_specification() -> None:
     body = DIALECT.error_body(422, "unsupported_content", "Unsupported content: image")
     assert body["error"]["message"] == "Unsupported content: image (unsupported_content)"
+
+
+# Keys of data objects (slice 21)
+
+
+def test_tool_use_input_and_input_example_keys_are_the_only_label_slots() -> None:
+    body = _fields_body()
+    body["messages"].append(
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "t", "name": "f", "input": {"who": "x"}}],
+        }
+    )
+    prepared = DIALECT.prepare_request(body, Policy())
+    texts = prepared.texts()
+    assert [texts[index] for index in sorted(prepared.labels())] == ["who", "to", "n", "cc"]
+    assert texts.index("who") == 2
+    assert prepared.labels() == {2, 5, 7, 8}
+
+
+def test_a_full_request_marks_exactly_the_tool_use_keys_as_labels() -> None:
+    prepared = DIALECT.prepare_request(_load("request_all_blocks.json"), Policy())
+    texts = prepared.texts()
+    assert [texts[index] for index in sorted(prepared.labels())] == [
+        "to",
+        "body",
+        "greeting",
+        "lines",
+        "urgent",
+        "copies",
+    ]
+
+
+def test_two_tool_use_input_keys_that_become_the_same_raise_at_apply() -> None:
+    body = _user([{"type": "tool_use", "id": "t", "name": "f", "input": {"ACME": 1, "Acme": 2}}])
+    prepared = DIALECT.prepare_request(body, Policy())
+    with pytest.raises(MalformedRequestError) as excinfo:
+        prepared.apply(["[ORG_1]", "[ORG_1]"])
+    assert str(excinfo.value) == (
+        "messages[0].content[0].input: two keys of one object would become the same"
+    )
+    assert list(body["messages"][0]["content"][0]["input"]) == ["ACME", "Acme"]
+
+
+def test_two_input_example_keys_that_become_the_same_raise_at_apply() -> None:
+    body: dict[str, Any] = {
+        "messages": [],
+        "tools": [{"name": "f"}, {"name": "g", "input_examples": [{"ACME": 1, "Acme": 2}]}],
+    }
+    prepared = DIALECT.prepare_request(body, Policy())
+    with pytest.raises(MalformedRequestError) as excinfo:
+        prepared.apply(["[ORG_1]", "[ORG_1]"])
+    assert (
+        str(excinfo.value)
+        == "tools[1].input_examples: two keys of one object would become the same"
+    )
+
+
+def test_end_to_end_a_tool_use_key_and_an_example_key_get_the_placeholder_of_the_text() -> None:
+    body = _user("Escribe a Juan Pérez sobre el pedido.")
+    body["messages"].append(
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "t",
+                    "name": "f",
+                    "input": {"attendees": {"Juan Pérez": "accepted"}},
+                }
+            ],
+        }
+    )
+    body["tools"] = [{"name": "f", "input_examples": [{"Juan Pérez": "accepted"}]}]
+    _pseudonymize(body)
+    assert body["messages"][0]["content"] == "Escribe a [PERSON_1] sobre el pedido."
+    assert body["messages"][1]["content"][0]["input"] == {"attendees": {"[PERSON_1]": "accepted"}}
+    assert body["tools"][0]["input_examples"] == [{"[PERSON_1]": "accepted"}]
+
+
+def test_a_tool_use_input_key_of_the_answer_is_restored() -> None:
+    body: dict[str, Any] = {
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "toolu_example01",
+                "name": "f",
+                "input": {"attendees": {"[PERSON_1]": "accepted", "[EMAIL_1]": "[PERSON_1]"}},
+            }
+        ]
+    }
+    DIALECT.restore_response(body, _mapping())
+    assert body["content"][0]["input"] == {
+        "attendees": {"Juan Pérez": "accepted", "juan.perez@example.com": "Juan Pérez"}
+    }

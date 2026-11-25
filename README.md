@@ -106,7 +106,7 @@ regulation. Read the [threat model](https://github.com/jcjmenez/aliasgate/blob/m
 | 18 | Organisation mentions evaluation set (entity linking, part 5) | done |
 | 19 | Organisation name forms and linking (entity linking, part 6) | done |
 | 20 | Request fields forwarded unchanged (names, metadata, stop sequences, location) | done |
-| 21 | Object keys and label slots (tool-call arguments, tool inputs, metadata) | planned |
+| 21 | Object keys and label slots (tool-call arguments, tool inputs, metadata) | done |
 | 22 | Schema values (`enum`, `const`, `default`, `examples`, `title`) | planned |
 
 ## Development

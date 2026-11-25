@@ -38,7 +38,7 @@ from aliasgate.dialects.base import (
     StreamTransformer,
     UnsupportedContentError,
     restore_all_strings,
-    slots_for_json_strings,
+    slots_for_keys_and_strings,
 )
 from aliasgate.dialects.openai_chat import OpenAIChatDialect
 from aliasgate.dialects.sse import SSEEvent, SSEParser
@@ -238,10 +238,11 @@ def _is_json(content_type: str | None) -> bool:
 
 
 def _strings(value: object) -> list[str]:
+    """Every string value and every key of a JSON value."""
     if isinstance(value, str):
         return [value]
     if isinstance(value, dict | list):
-        return [slot.get() for slot in slots_for_json_strings(value)]
+        return [slot.get() for slot in slots_for_keys_and_strings(value, [], "body")]
     return []
 
 
@@ -423,9 +424,12 @@ class _Gateway:
             raise errors.malformed_request(str(exc)) from None
         texts = prepared.texts()
         log.slots = len(texts)
+        pseudonymize = partial(self._pseudonymizer.pseudonymize, texts, labels=prepared.labels())
         try:
-            batch = await anyio.to_thread.run_sync(self._pseudonymizer.pseudonymize, texts)
+            batch = await anyio.to_thread.run_sync(pseudonymize)
             prepared.apply(batch.texts)
+        except MalformedRequestError as exc:  # two keys of one object would become the same
+            raise errors.malformed_request(str(exc)) from None
         except Exception as exc:
             log.failure("pseudonymize", exc)
             raise errors.pseudonymization_failed() from None

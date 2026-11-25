@@ -531,18 +531,26 @@ Set `detection.org_tokens: false` (or `ALIASGATE_DETECTION__ORG_TOKENS=false`) t
 
 The gateway pseudonymises message text, system prompts, tool results and tool-call arguments.
 It also pseudonymises the participant name of an OpenAI message (`messages[].name`), the stop
-sequences (OpenAI `stop`, Anthropic `stop_sequences`), the values of OpenAI `metadata` and
-`prompt_cache_key`. With `policy.tool_definitions` (on by default) it pseudonymises the
+sequences (OpenAI `stop`, Anthropic `stop_sequences`), the keys and values of OpenAI `metadata`
+and `prompt_cache_key`. With `policy.tool_definitions` (on by default) it pseudonymises the
 `description` values of tool definitions and of output schemas (OpenAI `response_format`,
-Anthropic `output_config`), and every string of an Anthropic tool's `input_examples`. When an
-Anthropic answer stops at a stop sequence, the `stop_sequence` it repeats is restored.
+Anthropic `output_config`), and every key and string of an Anthropic tool's `input_examples`.
+When an Anthropic answer stops at a stop sequence, the `stop_sequence` it repeats is restored.
+
+The keys of tool-call arguments (OpenAI `arguments`, Anthropic `tool_use` inputs), of input
+examples and of `metadata` are pseudonymised like their values, so a map such as
+`{"Juan Pérez": "accepted"}` leaves as `{"[PERSON_1]": "accepted"}` and comes back restored.
+Keys are read by the dictionary and the rules, and reached by propagation and name linking, but
+not by the ML layer, which takes ordinary field names such as `owner` or `company` for names. So
+a name in a key is replaced when it is also written in the text or in the dictionary, and an
+email or a rule-detected value in a key is always replaced. Keys keep their order. A key that
+holds no detected value is forwarded as written.
 
 These fields are forwarded as they are:
 
-- tool and function names, parameter names, and the `enum`, `const`, `default`, `examples` and
-  `title` values of tool and output schemas;
-- the keys of objects: metadata keys, and the keys inside tool-call arguments and input
-  examples;
+- tool and function names, parameter names (schema property names), `$defs` names, and the
+  `enum`, `const`, `default`, `examples` and `title` values of tool and output schemas;
+- the keys of every other object: message fields, schema keywords, provider options;
 - the `name` of a message with the `function` role, which names the function;
 - ids such as `tool_call_id`, `container` or `user_profile_id`;
 - under `strip_user_location: false`, the end user's location;
@@ -553,7 +561,7 @@ default (`policy.strip_user_identifiers`). So is the end user's approximate loca
 hosted web search (`user_location` in OpenAI `web_search_options` and in Anthropic's web search
 tools), with `policy.strip_user_location`; search results are then not localised.
 `web_search_options` itself is kept, since it turns web search on. A detected value inside any
-forwarded field makes the leak audit reject the request.
+forwarded field, or in any key, makes the leak audit reject the request.
 
 A placeholder can be longer than what it replaces (`Ana` becomes `[PERSON_1]`), so a metadata
 value close to OpenAI's 512-character limit may go over it, and the provider then rejects the
@@ -572,11 +580,11 @@ of the request also holds.
 | Code | Status | Outcome | Cause | Remedy |
 |---|---|---|---|---|
 | `invalid_json` | 400 | `rejected` | The body is not a JSON object encoded as UTF-8 (this includes a lone surrogate escape). | Send a JSON object. |
-| `malformed_request` | 400 | `rejected` | The body lacks the shape the API requires; the message names the field. | Fix the request; the provider would reject it too. |
+| `malformed_request` | 400 | `rejected` | The body lacks the shape the API requires; the message names the field. Also: two keys of one object, in tool-call arguments, tool inputs, input examples or metadata, would become the same placeholder (`ACME` and `Acme` are both `[ORG_1]`); the message names the object's position, never the keys. | Fix the request; the provider would reject it too. For a key collision, write the value one way in the keys of that object. |
 | `unknown_endpoint` | 404 | `rejected` | The method and path are neither a route nor a passthrough entry. `GET /metrics` answers this when metrics are off. | Use a supported route (section 4), or add a passthrough entry for an endpoint without customer data. |
 | `request_too_large` | 413 | `rejected` | The body is larger than `listen.max_request_bytes` (10 MiB). | Raise the limit, or send less. |
 | `unsupported_content` | 422 | `rejected` | Content the gateway cannot inspect (image, audio, document, file, an unknown block type) under `policy.unsupported_content: block`; the message names the kind. | Remove it, or set `pass` knowing it is forwarded unprotected. |
-| `leak_audit_failed` | 500 | `rejected` | A detected value was still somewhere in the outbound body. Typical causes: a field forwarded unchanged (tool names, a schema `enum` value, `model`); `propagate: false`; a variant with the same key that propagation does not replace (`STRASSE` for `Straße`, decomposed accents, full-width letters). | Move the value out of that field, turn propagation on, or write the value consistently. `policy.leak_audit: false` turns the audit off, which removes the last check before data leaves. |
+| `leak_audit_failed` | 500 | `rejected` | A detected value was still somewhere in the outbound body. Typical causes: a field or key forwarded unchanged (tool names, a schema property name, a schema `enum` value, `model`); `propagate: false`; a variant with the same key that propagation does not replace (`STRASSE` for `Straße`, decomposed accents, full-width letters). | Move the value out of that field, turn propagation on, or write the value consistently. `policy.leak_audit: false` turns the audit off, which removes the last check before data leaves. |
 | `pseudonymization_failed` | 500 | `gateway_error` | A detector raised; the log line names it. | Check the `request failed` log line (`detector`); for the ML detector, its installation and memory. |
 | `internal_error` | 500 | `gateway_error` | An unexpected failure in the gateway, the leak audit itself included. Nothing was forwarded. | Look up the log lines by request id, and report the exception class. |
 | `restoration_failed` | 502 | `gateway_error` | The provider's answer could not be restored; it is never returned un-restored. | Look up the log lines by request id, and report the exception class. |
@@ -588,8 +596,8 @@ and text the gateway still held back is never sent.
 
 ## 9. Safety checks
 
-Before forwarding, the **leak audit** searches every string value of the outbound body, not only
-the fields the gateway pseudonymised, for every detected value of at least
+Before forwarding, the **leak audit** searches every string value and every key of the outbound
+body, not only the fields the gateway pseudonymised, for every detected value of at least
 `min_propagation_length` characters: as a whole term ignoring case, and after Unicode NFKC
 normalisation and case folding. A word of a person's name that nobody detected (section 6.3)
 and that is a common word is searched only where it starts with an upper-case letter, as it is

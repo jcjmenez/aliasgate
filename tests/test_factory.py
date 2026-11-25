@@ -236,6 +236,25 @@ def test_build_runs_a_full_window_warm_up_prediction(tmp_path: Path, loaded: Loa
     assert len(MODEL_WORD.findall(loaded.model.calls[0])) == 40
 
 
+def test_the_ml_detector_is_contextual_and_does_not_read_labels(
+    tmp_path: Path, loaded: Loaded
+) -> None:
+    settings = _settings(tmp_path, ML_SECTION, people=_terms(("Juan Pérez", "PERSON")))
+    engine = build_pseudonymizer(settings)
+    calls = len(loaded.model.calls)
+    assert engine.pseudonymize(["Alice Johnson"], labels={0}).texts == ("Alice Johnson",)
+    assert loaded.model.calls[calls:] == []
+    assert engine.pseudonymize(["Alice Johnson"]).texts == ("[PERSON_1]",)
+    batch = engine.pseudonymize(["Alice Johnson", "Write to Alice Johnson"], labels={0})
+    assert batch.texts == ("[PERSON_1]", "Write to [PERSON_1]")
+    assert [detector.name for detector in engine.detectors] == [
+        "literal",
+        "dictionary",
+        "rules",
+        "gliner",
+    ]
+
+
 def test_ml_results_are_cached_across_requests(tmp_path: Path, loaded: Loaded) -> None:
     engine = build_pseudonymizer(_settings(tmp_path, ML_ON))
     for _ in range(3):

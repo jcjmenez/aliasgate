@@ -105,6 +105,11 @@ after its input limit. A window longer than the model accepts is an error, not a
 and the factory runs one whole window at start-up to prove the configured size fits. Results
 from overlapping windows are deduplicated; overlapping spans are left to the resolver.
 
+The ML layer needs the text around a value, so it runs on text slots only, never on label slots
+(§6): the keys of data objects are short field names, and the model takes many of them
+(`owner`, `company`, `customer_email`) for entities. The literal, dictionary and rule layers run
+on every slot, and propagation and name linking reach label slots too (§4.1).
+
 ### 3.3 Overlap resolution (`resolve.py`)
 
 Input: all spans for one text. Output: a list of non-overlapping spans sorted by `start`.
@@ -132,11 +137,14 @@ pseudonymised texts in the same order plus the mapping:
 class Pseudonymizer:
     def __init__(self, detectors: Sequence[Detector], *, allow_list: Iterable[str] = (),
                  propagate: bool = True, min_propagation_length: int = 3,
-                 person_tokens: bool = False, org_tokens: bool = False) -> None: ...
-    def pseudonymize(self, texts: Sequence[str]) -> PseudonymizedBatch: ...
-    def analyze(self, texts: Sequence[str]) -> list[list[Span]]: ...  # spans, not replaced
+                 person_tokens: bool = False, org_tokens: bool = False,
+                 contextual: Sequence[Detector] = ()) -> None: ...
+    def pseudonymize(self, texts: Sequence[str], *,
+                     labels: Collection[int] = ()) -> PseudonymizedBatch: ...
+    def analyze(self, texts: Sequence[str], *,
+                labels: Collection[int] = ()) -> list[list[Span]]: ...  # spans, not replaced
     @property
-    def detectors(self) -> tuple[Detector, ...]: ...   # in run order, the literal one first
+    def detectors(self) -> tuple[Detector, ...]: ...   # run order: literal, detectors, contextual
 
 @dataclass(frozen=True, slots=True)
 class PseudonymizedBatch:
@@ -162,6 +170,17 @@ cannot be pickled or copied, and their state cannot be read (security invariant 
 
 Processing the request as one batch is what makes consistency and determinism possible: the
 numbering depends only on the content and order of the texts.
+
+`contextual` detectors need the text around a value; today that is the ML detector, which the
+factory passes there. They run after `detectors`, on every text whose index is not in `labels`.
+The literal detector and `detectors` run on every text. `labels` are the indexes of the label
+slots of the request (§6); an index outside the texts raises `ValueError`, whose message holds
+no text. Everything after detection treats every text alike: the allow list, overlap
+resolution, placeholder assignment, name linking and propagation. So a value detected in a text
+slot is replaced in a label slot too, and an email or a dictionary term that appears only in a
+label is still found. With no labels, or no contextual detector, the output is the one the
+engine gave before labels existed. `analyze` takes the same `labels`. The evaluation harness,
+`aliasgate demo` and `aliasgate check` pass no labels.
 
 `person_tokens` turns on the linking of person names, and `org_tokens` that of organisation
 names (§4.3, steps 2a and 2b). Both keywords default to off, so library callers keep the output
@@ -518,18 +537,42 @@ class Dialect(Protocol):
 ```
 
 `prepare_request` walks the request body in a fixed, documented order and returns a
-`PreparedRequest`: the ordered slots plus finalisers (for example, re-serialising tool-call
-arguments that were parsed from a JSON string). It raises `UnsupportedContentError` when it meets
+`PreparedRequest`: the ordered slots plus finalisers (for example, renaming the keys of an
+object, or re-serialising tool-call arguments that were parsed from a JSON string). It raises `UnsupportedContentError` when it meets
 content the gateway cannot inspect and the policy is `block`. It also removes end-user
 identifiers when the policy says so. The proxy calls the engine with `prepared.texts()` and
 writes the results back with `prepared.apply(new_texts)`, which sets every slot and then runs
 the finalisers.
 
+```python
+@dataclass(slots=True)
+class Slot:
+    get: Callable[[], str]
+    set: Callable[[str], None]
+    label: bool = False        # a short value written as structure rather than prose
+
+class PreparedRequest:
+    def texts(self) -> list[str]: ...
+    def labels(self) -> frozenset[int]: ...   # indexes of the label slots
+    def apply(self, new_texts: Sequence[str]) -> None: ...
+```
+
+A **label slot** holds a short value written as structure rather than prose: today, the key of
+a data object. Contextual detectors (the ML layer) do not run on it (§4.1). The keys of data
+objects (tool-call arguments, tool inputs, input examples and OpenAI `metadata`) are label
+slots, and their objects are renamed in place by a finaliser that keeps the key order. When two
+keys of one object would become the same text (`ACME` and `Acme` both `[ORG_1]`), `apply` raises
+`MalformedRequestError` naming the object's position and no key, because merging them would
+lose a value.
+
 Slot order is part of the contract, because placeholder numbering follows it. The order is
 always: system content first, then messages in array order, and inside a message its name and
 then its parts in array order, then tool definitions, their input examples and output schemas
 (so adding a tool does not renumber the conversation), then the request's stop sequences,
-metadata values and prompt cache key last.
+metadata and prompt cache key last. Inside tool-call arguments, tool inputs, input examples and
+metadata, each key comes right before its value, depth-first, keys in insertion order. A key
+that holds no detected value numbers nothing, so the numbering of a request changes only when a
+key holds a detected value.
 
 ### 6.1 What is processed
 
@@ -537,12 +580,13 @@ metadata values and prompt cache key last.
 |---|---|---|
 | System prompt and message text | yes | yes |
 | Tool results | yes | n/a |
-| Tool-call arguments | yes: parse the JSON, process every string value, serialise with `json.dumps(obj, ensure_ascii=False, separators=(",", ":"))`; if parsing fails treat the raw string as text | yes: `restore(..., json_escape=True)` on the raw JSON string, or plain `restore` on every string value when the API delivers a parsed object |
+| Tool-call arguments (OpenAI `arguments`, Anthropic `tool_use` input) | yes: parse the JSON, process every key and string value (keys as label slots), serialise with `json.dumps(obj, ensure_ascii=False, separators=(",", ":"))`; if parsing fails treat the raw string as text | yes: `restore(..., json_escape=True)` on the raw JSON string, or plain `restore` on every key and string value when the API delivers a parsed object, never merging two keys |
 | Message names (OpenAI `messages[].name`, except for the `function` role, where it names the function) | yes | n/a |
 | Tool definitions | only values under a `description` key (policy `tool_definitions`, default on); names, parameter names and `enum`, `const`, `default`, `examples` and `title` values are never changed | n/a |
-| Tool input examples (Anthropic `input_examples`) and output schemas (OpenAI `response_format`, Anthropic `output_config`) | with policy `tool_definitions`: every string of the examples, and the values under a `description` key of the schemas; keys are never changed | n/a |
+| Tool input examples (Anthropic `input_examples`) and output schemas (OpenAI `response_format`, Anthropic `output_config`) | with policy `tool_definitions`: every key and every string of the examples (keys as label slots, pseudonymised), and the values under a `description` key of the schemas | n/a |
 | Stop sequences (OpenAI `stop`, Anthropic `stop_sequences`) | yes | yes: Anthropic `stop_sequence`, in the response and in the stream's `message_delta` |
-| OpenAI `metadata` values and `prompt_cache_key` | yes; metadata keys are never changed | n/a |
+| OpenAI `metadata` and `prompt_cache_key` | yes: each metadata key (a label slot, pseudonymised) and its value | n/a |
+| Other keys (schema property names, `$defs` names, keywords, message fields, provider options) | never changed; a detected value in one makes the leak audit reject the request (§8) | n/a |
 | Model reasoning with provider signatures (Anthropic `thinking`, `redacted_thinking`) | passed through unchanged | passed through unchanged (the user sees placeholders in reasoning; changing it would break the signature on the next turn) |
 | Images, audio, documents, files | rejected by default (policy `unsupported_content: block`); `pass` forwards them unchanged | n/a |
 | End-user identifiers (`user`, `safety_identifier`, `metadata.user_id`) | removed by default (policy `strip_user_identifiers`) | n/a |
@@ -586,9 +630,12 @@ Foundry serves the Messages API under `/anthropic/v1/`, so its `base_url` is
 - The gateway holds no provider credentials by default. `Authorization`, `x-api-key` and
   provider headers are forwarded as received. Hop-by-hop headers, `host` and `content-length`
   are not forwarded. `accept-encoding` is not forwarded; httpx negotiates its own.
-- Request flow: parse JSON → `prepare_request` → engine (in a worker thread) → write slots →
-  leak audit (in a worker thread, §8) → forward → restore (whole body, or stream transformer)
-  → respond.
+- Request flow: parse JSON → `prepare_request` → engine (in a worker thread, with
+  `labels=prepared.labels()`) → write slots → leak audit (in a worker thread, §8) → forward →
+  restore (whole body, or stream transformer) → respond. A `MalformedRequestError` from
+  `apply`, two keys of one object that would become the same, gives 400 `malformed_request`
+  like one from `prepare_request`; any other exception while pseudonymising gives 500
+  `pseudonymization_failed`. Nothing is forwarded in either case.
 - **Upstream URL.** A request for path `P` is forwarded to `{base_url}{P}`, followed by the
   client's query string. `base_url` may end in a base path, for providers that serve the API
   below a prefix (Azure OpenAI serves it only under `/openai/v1/`). Configuration validation
@@ -598,7 +645,8 @@ Foundry serves the Messages API under `/anthropic/v1/`, so its `base_url` is
   percent-encoded, because httpx or the upstream would resolve it. The full rules are in
   [plan/slice-04-config-and-dictionary.md](plan/slice-04-config-and-dictionary.md).
 - Upstream error responses (status ≥ 400) are passed through with `restore` applied to string
-  values of the JSON body, because providers sometimes echo request content in error messages.
+  values and keys of the JSON body, because providers sometimes echo request content in error
+  messages. Unresolved placeholders are counted in keys as well as in string values.
 - **Fail closed.** Any exception between parsing and forwarding results in an error response in
   the dialect's error shape and nothing is forwarded. Any exception while restoring a
   non-streamed response results in a 502; the un-restored body is never returned as if it were
@@ -624,7 +672,7 @@ Exceptions are logged by class name only, and the JSON formatter never renders a
 
 | Check | When | On failure |
 |---|---|---|
-| **Outbound leak audit**: for every non-`LITERAL` entity in the mapping whose key length is ≥ `min_propagation_length`, no **string value anywhere in the outbound body** (not only the slots; keys are not checked) contains it, either by the propagation pattern of §4.3 step 3 (whole-term boundaries, case-insensitive) or by its key, with the same boundaries, in the NFKC-normalised, case-folded string; a `capitalised` entity only by a match of the pattern that starts with an upper-case or title-case letter | after the slots are written, before forwarding | reject with 500 `leak_audit_failed`, nothing is forwarded, metric `aliasgate_leak_audit_failures_total` |
+| **Outbound leak audit**: for every non-`LITERAL` entity in the mapping whose key length is ≥ `min_propagation_length`, no **string value and no key anywhere in the outbound body** (not only the slots) contains it, either by the propagation pattern of §4.3 step 3 (whole-term boundaries, case-insensitive) or by its key, with the same boundaries, in the NFKC-normalised, case-folded string; a `capitalised` entity only by a match of the pattern that starts with an upper-case or title-case letter | after the slots are written, before forwarding | reject with 500 `leak_audit_failed`, nothing is forwarded, metric `aliasgate_leak_audit_failures_total` |
 | **Unresolved placeholders**: tolerant matches in the response not present in the mapping | after restoring | pass through unchanged, metric `aliasgate_unresolved_placeholders_total` |
 
 The audit searches both ways because the two notions of "the same value" differ. The term

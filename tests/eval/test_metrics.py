@@ -1,4 +1,4 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -173,8 +173,10 @@ def test_examples_without_entities_are_counted_and_flagged_when_anything_is_pred
 
 
 class _TamperingPseudonymizer(Pseudonymizer):
-    def pseudonymize(self, texts: Sequence[str]) -> PseudonymizedBatch:
-        batch = super().pseudonymize(texts)
+    def pseudonymize(
+        self, texts: Sequence[str], *, labels: Collection[int] = ()
+    ) -> PseudonymizedBatch:
+        batch = super().pseudonymize(texts, labels=labels)
         return PseudonymizedBatch(
             tuple(text + "!" for text in batch.texts), batch.mapping, batch.stats
         )

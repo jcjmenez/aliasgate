@@ -154,8 +154,8 @@ def test_a_part_type_that_is_not_a_label_is_reported_as_unknown() -> None:
 def test_assistant_tool_call_arguments_become_slots_and_are_reserialised_compactly() -> None:
     body = _assistant_call('{"to": "juan.perez@example.com", "cc": ["a@example.org"]}')
     prepared = DIALECT.prepare_request(body, Policy())
-    assert prepared.texts() == ["juan.perez@example.com", "a@example.org"]
-    prepared.apply(["[EMAIL_1]", "[EMAIL_2]"])
+    assert prepared.texts() == ["to", "juan.perez@example.com", "cc", "a@example.org"]
+    prepared.apply(["to", "[EMAIL_1]", "cc", "[EMAIL_2]"])
     arguments = _arguments(body)
     assert arguments == '{"to":"[EMAIL_1]","cc":["[EMAIL_2]"]}'
     assert json.loads(arguments) == {"to": "[EMAIL_1]", "cc": ["[EMAIL_2]"]}
@@ -163,7 +163,7 @@ def test_assistant_tool_call_arguments_become_slots_and_are_reserialised_compact
 
 def test_escaped_strings_in_arguments_are_decoded_before_detection() -> None:
     body = _assistant_call('{"name": "Jos\\u00e9 \\"Pepe\\""}')
-    assert _texts(body) == ['José "Pepe"']
+    assert _texts(body) == ["name", 'José "Pepe"']
 
 
 @pytest.mark.parametrize(
@@ -216,8 +216,8 @@ def test_legacy_function_call_arguments_are_treated_like_tool_call_arguments() -
         ]
     }
     prepared = DIALECT.prepare_request(body, Policy())
-    assert prepared.texts() == ["Alice Johnson"]
-    prepared.apply(["[PERSON_1]"])
+    assert prepared.texts() == ["who", "Alice Johnson"]
+    prepared.apply(["who", "[PERSON_1]"])
     assert body["messages"][0]["function_call"] == {
         "name": "lookup",
         "arguments": '{"who":"[PERSON_1]"}',
@@ -298,7 +298,7 @@ def test_with_tool_definitions_off_no_tool_slot_exists() -> None:
     body = _load("request_all_fields.json")
     texts = _texts(body, Policy(tool_definitions=False))
     assert not any("description" in text for text in texts)
-    assert texts[-4:] == ["prediction text", "stop text", "T-0001", "cache key"]
+    assert texts[-5:] == ["prediction text", "stop text", "ticket", "T-0001", "cache key"]
 
 
 def test_slot_order_is_messages_then_prediction_then_tools_then_request_fields() -> None:
@@ -311,11 +311,14 @@ def test_slot_order_is_messages_then_prediction_then_tools_then_request_fields()
         "assistant part",
         "refusal part",
         "assistant refusal",
+        "to",
         "to argument",
+        "cc",
         "cc argument",
         "custom input",
         "tool result",
         "tool result part",
+        "query",
         "function call argument",
         "function result",
         "prediction text",
@@ -327,6 +330,7 @@ def test_slot_order_is_messages_then_prediction_then_tools_then_request_fields()
         "query description",
         "response format description",
         "stop text",
+        "ticket",
         "T-0001",
         "cache key",
     ]
@@ -336,11 +340,14 @@ def test_fields_outside_the_slots_are_never_touched() -> None:
     body = _load("request_all_fields.json")
     original = copy.deepcopy(body)
     prepared = DIALECT.prepare_request(body, Policy())
-    prepared.apply([f"[SLOT_{number}]" for number in range(1, len(prepared.texts()) + 1)])
+    texts = prepared.texts()
+    new_texts = [f"[SLOT_{number}]" for number in range(1, len(texts) + 1)]
+    prepared.apply(new_texts)
+    written = dict(zip(texts, new_texts, strict=True))
     for key in ("model", "temperature"):
         assert body[key] == original[key]
     assert body["web_search_options"] == {"search_context_size": "low"}
-    assert list(body["metadata"]) == list(original["metadata"])
+    assert body["metadata"] == {written["ticket"]: written["T-0001"]}
     json_schema = body["response_format"]["json_schema"]
     assert json_schema["name"] == "answer"
     assert json_schema["schema"] == {"type": "object"}
@@ -352,7 +359,14 @@ def test_fields_outside_the_slots_are_never_touched() -> None:
     calls = body["messages"][3]["tool_calls"]
     assert [call["id"] for call in calls] == ["call_0001", "call_0002"]
     assert calls[0]["function"]["name"] == "send_email"
+    assert json.loads(calls[0]["function"]["arguments"]) == {
+        written["to"]: written["to argument"],
+        written["cc"]: [written["cc argument"]],
+    }
     assert calls[1]["custom"]["name"] == "run_query"
+    assert json.loads(body["messages"][6]["function_call"]["arguments"]) == {
+        written["query"]: written["function call argument"]
+    }
     function = body["tools"][0]["function"]
     assert function["name"] == "send_email"
     assert function["strict"] is True
@@ -437,13 +451,13 @@ def test_stop_as_a_string_is_one_slot_and_as_a_list_one_slot_per_item() -> None:
     assert _texts({"messages": [], "stop": None}) == []
 
 
-def test_metadata_values_are_slots_in_key_order_and_keys_are_kept() -> None:
+def test_metadata_keys_and_values_are_slots_in_key_order() -> None:
     body: dict[str, Any] = {"messages": [], "metadata": {"b": "second", "a": "first"}}
     prepared = DIALECT.prepare_request(body, Policy())
-    assert prepared.texts() == ["second", "first"]
-    prepared.apply(["[X_1]", "[X_2]"])
-    assert body["metadata"] == {"b": "[X_1]", "a": "[X_2]"}
-    assert list(body["metadata"]) == ["b", "a"]
+    assert prepared.texts() == ["b", "second", "a", "first"]
+    prepared.apply(["[K_1]", "[X_1]", "[K_2]", "[X_2]"])
+    assert body["metadata"] == {"[K_1]": "[X_1]", "[K_2]": "[X_2]"}
+    assert list(body["metadata"]) == ["[K_1]", "[K_2]"]
 
 
 def test_null_metadata_and_cache_key_add_no_slot() -> None:
@@ -458,12 +472,12 @@ def test_request_fields_come_after_tool_definitions_in_a_fixed_order() -> None:
         "stop": "stop",
         "tools": [{"type": "function", "function": {"name": "f", "description": "tool"}}],
     }
-    assert _texts(body) == ["text", "tool", "stop", "meta", "key"]
+    assert _texts(body) == ["text", "tool", "stop", "m", "meta", "key"]
 
 
 def test_request_fields_are_slots_even_with_tool_definitions_off() -> None:
     body: dict[str, Any] = {"messages": [], "stop": "s", "metadata": {"m": "v"}}
-    assert _texts(body, Policy(tool_definitions=False)) == ["s", "v"]
+    assert _texts(body, Policy(tool_definitions=False)) == ["s", "m", "v"]
 
 
 def test_response_format_descriptions_are_slots_at_any_depth() -> None:
@@ -853,3 +867,85 @@ def test_error_body_has_the_openai_error_shape() -> None:
             "code": "unsupported_content",
         }
     }
+
+
+# Keys of data objects (slice 21)
+
+
+def test_argument_and_metadata_keys_are_the_only_label_slots() -> None:
+    prepared = DIALECT.prepare_request(_load("request_all_fields.json"), Policy())
+    texts = prepared.texts()
+    assert [texts[index] for index in sorted(prepared.labels())] == ["to", "cc", "query", "ticket"]
+
+
+@pytest.mark.parametrize(
+    ("body", "where"),
+    [
+        (
+            _assistant_call('{"ACME": "a", "Acme": "b"}'),
+            "messages[0].tool_calls[0].function.arguments",
+        ),
+        (
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "function_call": {"arguments": '[{"ACME": 1, "Acme": 2}]'},
+                    }
+                ]
+            },
+            "messages[0].function_call.arguments",
+        ),
+        ({"messages": [], "metadata": {"ACME": "a", "Acme": "b"}}, "metadata"),
+    ],
+    ids=["tool-call", "function-call", "metadata"],
+)
+def test_two_keys_that_become_the_same_raise_at_apply_naming_their_position(
+    body: dict[str, Any], where: str
+) -> None:
+    prepared = DIALECT.prepare_request(body, Policy())
+    new_texts = ["[ORG_1]" if text in {"ACME", "Acme"} else text for text in prepared.texts()]
+    with pytest.raises(MalformedRequestError) as excinfo:
+        prepared.apply(new_texts)
+    assert str(excinfo.value) == f"{where}: two keys of one object would become the same"
+    assert "ACME" not in str(excinfo.value)
+    assert "Acme" not in str(excinfo.value)
+
+
+def test_end_to_end_argument_and_metadata_keys_get_the_placeholder_of_the_text() -> None:
+    body: dict[str, Any] = {
+        "messages": [
+            {"role": "user", "content": "Escribe a Juan Pérez sobre el pedido."},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "f",
+                            "arguments": '{"attendees": {"Juan Pérez": "accepted"}}',
+                        },
+                    }
+                ],
+            },
+        ],
+        "metadata": {"Juan Pérez": "vip", "maria.lopez@example.org": "x"},
+    }
+    engine = Pseudonymizer([DictionaryDetector([Term("Juan Pérez", "PERSON")]), RuleDetector()])
+    prepared = DIALECT.prepare_request(body, Policy())
+    prepared.apply(engine.pseudonymize(prepared.texts(), labels=prepared.labels()).texts)
+    assert body["messages"][0]["content"] == "Escribe a [PERSON_1] sobre el pedido."
+    arguments = body["messages"][1]["tool_calls"][0]["function"]["arguments"]
+    assert arguments == '{"attendees":{"[PERSON_1]":"accepted"}}'
+    assert body["metadata"] == {"[PERSON_1]": "vip", "[EMAIL_1]": "x"}
+
+
+def test_argument_keys_of_the_answer_are_restored_on_the_raw_string() -> None:
+    body = {
+        "choices": [{"index": 0, "message": _assistant_call('{"[PERSON_1]": "ok"}')["messages"][0]}]
+    }
+    DIALECT.restore_response(body, _mapping())
+    arguments = body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+    assert json.loads(arguments) == {"Juan Pérez": "ok"}

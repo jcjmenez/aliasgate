@@ -115,6 +115,39 @@ a placeholder key, and `test_keys_are_not_checked` of the audit. They are listed
 Label slots changed no other test, and no proxy, engine, evaluation or configuration test
 changed.
 
+## Decisions made while implementing
+
+- **Value slots of a renamed object keep working.** Each object reached by
+  `slots_for_keys_and_strings` keeps two lists of its keys: as stored in the dict, and as its
+  key slots last set them. Value slots read and write through the stored list, and the renaming
+  step updates it after renaming. So `texts()` after `apply` gives the new keys and values, and
+  a second `apply` works, as for every other slot.
+- **The renaming step rebuilds the dict in place** (`clear`, then `update` in key order), so
+  the object keeps its identity and its nested values are not copied. A step whose keys did
+  not change does not touch the dict.
+- **`slots_for_strings_not_under` was removed.** Slice 20 added it for `input_examples`, which
+  now use `slots_for_keys_and_strings(..., skip_under="description")`, and nothing else used
+  it. Slice 20's file has a note.
+- **The proxy counts unresolved placeholders** with
+  `slots_for_keys_and_strings(value, [], "body")`: the finalizers are thrown away, since the
+  answer is only read. The stream does the same for a `tool_use` input.
+- **Contextual detectors are timed like the others.** `detector_seconds` has an entry for each,
+  `0.0` when every text of the batch is a label.
+- **An index in `labels` outside the texts** raises `ValueError("labels must be indexes of the
+  texts")`.
+- **One test outside the list changed its signature, not its expectation.** The
+  `_TamperingPseudonymizer` helper in `tests/eval/test_metrics.py` overrides `pseudonymize`; it
+  now takes `labels` too, or `mypy --strict` reports the override as incompatible. Every
+  pre-existing test still passes except the 18 expectations listed under Tests (checked by
+  running the `main` test tree against the new code).
+- **Mutation checks.** Every mutation listed under Tests (10 mutants: the unresolved count is
+  broken once in the proxy and once in the stream), and 16 more, made a test fail: the key
+  slots of each dialect field (3), `labels()` empty, contextual detectors never running, no
+  range check, the ML detector not contextual, the proxy passing no labels, the rename no-op
+  check, the key order lost on rename, renaming after the arguments are written, `skip_under`
+  ignored, Anthropic finalizers dropped, restoring keys with merges, and each half of the
+  no-merge rule (2). 26 mutants, none survived.
+
 ## Dependencies to add
 
 None.

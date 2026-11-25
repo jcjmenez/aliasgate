@@ -449,3 +449,19 @@ def test_any_chunking_of_json_deltas_gives_restore_of_the_whole_json(
     ]
     expected = restore(text, _mapping(), json_escape=True)
     assert _text(_run(events), 0, key="partial_json") == expected
+
+
+def test_a_tool_use_start_has_its_input_keys_restored_and_unknown_ones_counted() -> None:
+    transformer = _transformer()
+    block = {
+        "type": "tool_use",
+        "id": "t",
+        "name": "f",
+        "input": {"attendees": {"[PERSON_1]": "accepted", "[PERSON_9]": "pending"}},
+    }
+    (event,) = transformer.feed(_start(0, block))
+    data = json.loads(event.data)
+    assert data["content_block"]["input"] == {
+        "attendees": {'Juan "JP" Pérez': "accepted", "[PERSON_9]": "pending"}
+    }
+    assert transformer.unresolved == 1

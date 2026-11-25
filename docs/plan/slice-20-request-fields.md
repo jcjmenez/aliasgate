@@ -145,7 +145,9 @@ whether the live API accepts brackets in it is checked manually (see Tests).
   in `input_examples` included. So the examples add every other string, through the new
   `slots_for_strings_not_under(container, key)` in `base.py`. Walking all of them again would
   have made one value two slots, and the v0.6.0 slots stay a prefix of the new ones. A test
-  pins it.
+  pins it. (**Changed in [slice 21](slice-21-object-keys.md):** the examples are read by
+  `slots_for_keys_and_strings(..., skip_under="description")`, and
+  `slots_for_strings_not_under` was removed, since nothing used it any more.)
 - **`slots_for_string_list(items, where)`** in `base.py` gives a slot per item and raises
   `MalformedRequestError` naming `where[i]`. OpenAI `stop` and Anthropic `stop_sequences` share
   it.
