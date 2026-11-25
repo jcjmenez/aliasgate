@@ -67,6 +67,21 @@ class Dialect:
         tool = {"type": "web_search_20250305", "name": "web_search", "user_location": location}
         return {"stop_sequences": [value], "tools": [tool]}
 
+    def keyed(self, *keys: str) -> dict[str, Any]:
+        """A request whose data-object keys (slice 21) are `keys`, after a text naming them."""
+        data = dict.fromkeys(keys, "x")
+        if self.name == "openai":
+            function = {"name": "f", "arguments": json.dumps({"attendees": data})}
+            call = {"id": "call_1", "type": "function", "function": function}
+            body = self.request(TEXT, metadata=data)
+            body["messages"].append({"role": "assistant", "content": None, "tool_calls": [call]})
+            return body
+        tool_use = {"type": "tool_use", "id": "t", "name": "f", "input": {"attendees": data}}
+        tool = {"name": "f", "input_schema": {"type": "object"}, "input_examples": [data]}
+        body = self.request(TEXT, tools=[tool])
+        body["messages"].append({"role": "assistant", "content": [tool_use]})
+        return body
+
     def malformed(self) -> dict[str, Any]:
         return {"model": "example", "messages": "Juan Pérez"}
 
@@ -357,6 +372,11 @@ async def test_logs_and_metrics_contain_no_text(
     fields = dialect.request(TEXT, **dialect.request_fields("Juan Pérez"))
     fielded = await client.post(dialect.path, json=fields, headers=headers)
     assert fielded.status_code == 200
+    # Keys of data objects holding the dictionary values (slice 21), then two that collide.
+    keyed = dialect.keyed("Juan Pérez", "juan.perez@example.com")
+    assert (await client.post(dialect.path, json=keyed, headers=headers)).status_code == 200
+    colliding = dialect.keyed("ACME Corporation", "acme corporation")
+    assert (await client.post(dialect.path, json=colliding, headers=headers)).status_code == 400
     await client.post("/v1/Juan Pérez/juan.perez@example.com", json=dialect.request(TEXT),
                       headers=headers)  # fmt: skip
     metrics = await client.get("/metrics")

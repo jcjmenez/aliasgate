@@ -7,6 +7,28 @@ change the configuration or the command line.
 
 ## [Unreleased]
 
+### Changed
+
+- The keys of tool-call arguments (OpenAI `arguments`, Anthropic `tool_use` inputs), Anthropic
+  tool `input_examples` and OpenAI `metadata` are pseudonymised, each key numbered right before
+  its value. This renumbers requests whose keys hold detected values; a request whose keys hold
+  none is forwarded as before.
+- The ML layer does not read these keys: it took ordinary field names (`owner`, `company`) for
+  names. The dictionary and the rules read them, and propagation and name linking reach them,
+  so a name detected in the text is replaced in a key too.
+- Two keys of one object that would become the same placeholder (`ACME` and `Acme`) are
+  rejected with 400 `malformed_request`, naming the object's position and no key.
+
+### Fixed
+
+- A detected value in a key left the gateway unchanged, because the leak audit did not check
+  keys: `{"Juan Pérez": "accepted"}` as an OpenAI `metadata` or Anthropic `tool_use` input or
+  `input_examples` key. The audit now searches every key, so a detected value in a key the
+  gateway does not change (a schema property name) rejects the request with
+  `leak_audit_failed`.
+- Non-streamed Anthropic answers returned placeholders in `tool_use` input keys to the client.
+  They are restored now, as streamed answers and OpenAI answers already were.
+
 ## [0.7.0] - 2026-11-24
 
 Request fields that 0.6.0 forwarded without reading. Message names, metadata values, stop

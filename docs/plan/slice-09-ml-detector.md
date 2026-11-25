@@ -162,6 +162,10 @@ When `ml.enabled`: load the model at start-up, wrap the detector in `CachedDetec
 it after the rules detector. Run one warm-up prediction on a fixed synthetic sentence so the
 first real request is not slow and a broken model fails at start-up.
 
+**Changed in [slice 21](slice-21-object-keys.md).** The factory passes the ML detector as the
+engine's `contextual` detector instead of appending it to `detectors`. It still runs after the
+rules, but no longer on label slots (the keys of data objects).
+
 ### Decisions made while implementing (slice 09)
 
 - Checked on 2026-11-19. `gliner` 0.2.30 (PyPI, 2026-10-31, Python >= 3.10) installs torch

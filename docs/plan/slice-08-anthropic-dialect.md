@@ -68,6 +68,12 @@ descriptions; `stop_sequences` are slots after them; the `stop_sequence` of a re
 `message_delta` event is restored; and every tool's `user_location` is removed under
 `policy.strip_user_location`.
 
+**Changed in [slice 21](slice-21-object-keys.md).** A `tool_use` input and each tool's
+`input_examples` give every key, as a label slot right before its value, and keys are renamed
+in place by finalizers, which `prepare_request` now returns. `restore_response` and the
+stream's `content_block_start` restore `tool_use` input keys too, and the stream counts
+unresolved placeholders in them.
+
 Why thinking blocks are not touched: they carry a provider signature over their exact content
 and must be sent back unchanged on later turns. Since the model only ever saw placeholders, a
 thinking block contains placeholders, not real values. The gateway does not restore them in the

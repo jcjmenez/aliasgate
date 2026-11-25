@@ -134,6 +134,11 @@ descriptions under `tool_definitions`; `stop`, the `metadata` values and `prompt
 are slots after them, in that order; and `web_search_options.user_location` is removed under
 `policy.strip_user_location`.
 
+**Changed in [slice 21](slice-21-object-keys.md).** Keys are slots inside tool-call arguments
+and `metadata`: each key is a label slot right before its value, and keys are renamed in place
+before the arguments are re-serialised. Two keys of one object that would become the same raise
+`MalformedRequestError` at `apply`. The keys of other objects are still never slots.
+
 ### `openai_chat.py`: response
 
 `restore_response(body, mapping)` mutates the body in place. For each choice:

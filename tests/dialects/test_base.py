@@ -18,6 +18,7 @@ from aliasgate.dialects.base import (
     restore_all_strings,
     slots_for_json_strings,
     slots_for_key_strings,
+    slots_for_keys_and_strings,
 )
 from aliasgate.mapping import Mapping
 
@@ -274,7 +275,7 @@ def test_restore_all_strings_restores_nested_strings_and_leaves_other_values_alo
             "code": 400,
             "retry": False,
             "ratio": 0.5,
-            "details": ["Juan Pérez", {"[PERSON_1]": "juan.perez@example.com"}, "[PERSON_9]"],
+            "details": ["Juan Pérez", {"Juan Pérez": "juan.perez@example.com"}, "[PERSON_9]"],
         }
     }
     assert body == original
@@ -287,6 +288,257 @@ def test_restore_all_strings_returns_scalars_unchanged(value: Any) -> None:
 
 def test_restore_all_strings_restores_a_bare_string() -> None:
     assert restore_all_strings("Hi [PERSON_1]", _mapping()) == "Hi Juan Pérez"
+
+
+def test_restore_all_strings_never_merges_a_restored_key_with_an_existing_one() -> None:
+    restored = restore_all_strings({"[PERSON_1]": 1, "Juan Pérez": 2}, _mapping())
+    assert restored == {"[PERSON_1]": 1, "Juan Pérez": 2}
+    assert list(restored) == ["[PERSON_1]", "Juan Pérez"]
+
+
+def test_restore_all_strings_never_merges_two_keys_with_the_same_restored_form() -> None:
+    restored = restore_all_strings({"[PERSON_1]": 1, "[person_1]": 2}, _mapping())
+    assert restored == {"Juan Pérez": 1, "[person_1]": 2}
+    assert list(restored) == ["Juan Pérez", "[person_1]"]
+
+
+def test_restore_all_strings_restores_keys_in_order_at_every_depth() -> None:
+    value = {"b": {"[EMAIL_1]": ["[PERSON_1]"]}, "[PERSON_1]": True}
+    restored = restore_all_strings(value, _mapping())
+    assert restored == {"b": {"juan.perez@example.com": ["Juan Pérez"]}, "Juan Pérez": True}
+    assert list(restored) == ["b", "Juan Pérez"]
+
+
+# Keys and strings of data objects (slice 21)
+
+
+def _key_and_string_slots(
+    container: dict[str, Any] | list[Any], *, skip_under: str | None = None
+) -> tuple[list[Slot], list[Any]]:
+    finalizers: list[Any] = []
+    slots = slots_for_keys_and_strings(container, finalizers, "where", skip_under=skip_under)
+    return slots, finalizers
+
+
+def test_slots_for_keys_and_strings_gives_each_key_before_its_value_depth_first() -> None:
+    value: dict[str, Any] = {
+        "to": "juan.perez@example.com",
+        "cc": ["a@example.org", {"name": "Alice Johnson", "age": 41}],
+        "flags": [True, None, 1.5],
+        "empty": {},
+        "last": "end",
+    }
+    slots, _ = _key_and_string_slots(value)
+    assert [slot.get() for slot in slots] == [
+        "to",
+        "juan.perez@example.com",
+        "cc",
+        "a@example.org",
+        "name",
+        "Alice Johnson",
+        "age",
+        "flags",
+        "empty",
+        "last",
+        "end",
+    ]
+    assert [slot.label for slot in slots] == [
+        True, False, True, False, True, False, True, True, True, True, False,
+    ]  # fmt: skip
+
+
+def test_a_list_container_gives_its_strings_and_the_keys_of_its_objects() -> None:
+    slots, _ = _key_and_string_slots(["x", {"k": "v"}, [{"j": 1}]])
+    assert [(slot.get(), slot.label) for slot in slots] == [
+        ("x", False),
+        ("k", True),
+        ("v", False),
+        ("j", True),
+    ]
+
+
+def test_skip_under_skips_the_string_value_and_keeps_its_key() -> None:
+    value: dict[str, Any] = {
+        "description": "already a slot",
+        "to": "a@example.org",
+        "nested": [{"description": "also skipped", "other": "kept"}],
+        "list": {"description": ["a string in a list is kept"]},
+    }
+    slots, _ = _key_and_string_slots(value, skip_under="description")
+    assert [slot.get() for slot in slots] == [
+        "description",
+        "to",
+        "a@example.org",
+        "nested",
+        "description",
+        "other",
+        "kept",
+        "list",
+        "description",
+        "a string in a list is kept",
+    ]
+
+
+def test_applying_key_and_string_slots_unchanged_changes_nothing() -> None:
+    value: dict[str, Any] = {"a": {"b": ["c", {"d": "e"}]}, "f": 1}
+    original = copy.deepcopy(value)
+    slots, finalizers = _key_and_string_slots(value)
+    prepared = PreparedRequest(slots, finalizers)
+    prepared.apply(prepared.texts())
+    assert value == original
+    assert list(value) == ["a", "f"]
+
+
+def test_renaming_keys_keeps_their_order_and_their_values() -> None:
+    inner: dict[str, Any] = {"x": "1"}
+    value: dict[str, Any] = {"Alice Johnson": "accepted", "b": inner, "c": 3}
+    slots, finalizers = _key_and_string_slots(value)
+    prepared = PreparedRequest(slots, finalizers)
+    assert prepared.texts() == ["Alice Johnson", "accepted", "b", "x", "1", "c"]
+    prepared.apply(["[PERSON_1]", "ok", "[B]", "x", "[ONE]", "c"])
+    assert value == {"[PERSON_1]": "ok", "[B]": {"x": "[ONE]"}, "c": 3}
+    assert list(value) == ["[PERSON_1]", "[B]", "c"]
+    assert value["[B]"] is inner
+    assert prepared.texts() == ["[PERSON_1]", "ok", "[B]", "x", "[ONE]", "c"]
+
+
+class _Recording(dict[str, Any]):
+    """A dict that records every call that would change it."""
+
+    def __init__(self, *args: Any) -> None:
+        super().__init__(*args)
+        self.changes: list[str] = []
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.changes.append("setitem")
+        super().__setitem__(key, value)
+
+    def __delitem__(self, key: str) -> None:
+        self.changes.append("delitem")
+        super().__delitem__(key)
+
+    def clear(self) -> None:
+        self.changes.append("clear")
+        super().clear()
+
+    def pop(self, *args: Any) -> Any:
+        self.changes.append("pop")
+        return super().pop(*args)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        self.changes.append("update")
+        super().update(*args, **kwargs)
+
+
+def test_an_object_whose_keys_did_not_change_is_left_untouched_by_its_renaming_step() -> None:
+    value = _Recording({"a": "x", "b": "y"})
+    slots, finalizers = _key_and_string_slots(value)
+    assert len(finalizers) == 1
+    for finalize in finalizers:
+        finalize()
+    assert value.changes == []
+    slots[0].set("a")
+    for finalize in finalizers:
+        finalize()
+    assert value.changes == []
+    assert value == {"a": "x", "b": "y"}
+
+
+def test_two_keys_that_would_become_equal_raise_without_naming_them_and_change_nothing() -> None:
+    inner: dict[str, Any] = {"ACME": "a", "Acme": "b"}
+    value: dict[str, Any] = {"orgs": inner}
+    finalizers: list[Any] = []
+    slots = slots_for_keys_and_strings(value, finalizers, "metadata")
+    prepared = PreparedRequest(slots, finalizers)
+    with pytest.raises(MalformedRequestError) as excinfo:
+        prepared.apply(["orgs", "[ORG_1]", "a", "[ORG_1]", "b"])
+    assert str(excinfo.value) == "metadata: two keys of one object would become the same"
+    assert "ACME" not in str(excinfo.value)
+    assert "Acme" not in str(excinfo.value)
+    assert "ORG" not in str(excinfo.value)
+    assert list(inner) == ["ACME", "Acme"]
+
+
+def test_slots_for_keys_and_strings_handles_deep_nesting_without_recursion() -> None:
+    value: dict[str, Any] = {"leaf": "deep"}
+    for _ in range(5000):
+        value = {"k": value}
+    slots, _ = _key_and_string_slots(value)
+    assert len(slots) == 5002
+    assert slots[-1].get() == "deep"
+
+
+def test_a_key_slot_whose_key_is_not_a_string_raises_without_the_key() -> None:
+    value: dict[Any, Any] = {7: "x"}
+    slots, _ = _key_and_string_slots(value)
+    with pytest.raises(TypeError) as excinfo:
+        slots[0].get()
+    assert "7" not in str(excinfo.value)
+
+
+def test_labels_are_the_indexes_of_the_label_slots() -> None:
+    value: dict[str, Any] = {"k": "v", "l": ["w"]}
+    slots, finalizers = _key_and_string_slots(value)
+    box = ["text"]
+    text = Slot(lambda: box[0], lambda new: box.__setitem__(0, new))
+    prepared = PreparedRequest([text, *slots], finalizers)
+    assert prepared.labels() == frozenset({1, 3})
+    assert isinstance(prepared.labels(), frozenset)
+    assert PreparedRequest([text], []).labels() == frozenset()
+
+
+def test_a_slot_is_a_text_slot_unless_it_says_it_is_a_label() -> None:
+    assert Slot(get=lambda: "x", set=lambda value: None).label is False
+    assert Slot(get=lambda: "x", set=lambda value: None, label=True).label is True
+
+
+_KEYED_LEAVES = st.text() | st.integers() | st.booleans() | st.none()
+_LEVEL_1 = st.dictionaries(
+    st.text(), _KEYED_LEAVES | st.lists(_KEYED_LEAVES, max_size=3), max_size=4
+)
+_LEVEL_2 = st.dictionaries(st.text(), _KEYED_LEAVES | _LEVEL_1, max_size=4)
+_LEVEL_3 = st.dictionaries(
+    st.text(), _KEYED_LEAVES | _LEVEL_2 | st.lists(_LEVEL_1, max_size=2), max_size=4
+)
+
+
+def _keys_and_strings_depth_first(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [
+            s for key, item in value.items() for s in [key, *_keys_and_strings_depth_first(item)]
+        ]
+    if isinstance(value, list):
+        return [s for item in value for s in _keys_and_strings_depth_first(item)]
+    return []
+
+
+def _shape(value: Any) -> Any:
+    if isinstance(value, str):
+        return str
+    if isinstance(value, dict):
+        return ("object", [_shape(item) for item in value.values()])
+    if isinstance(value, list):
+        return ("array", [_shape(item) for item in value])
+    return value
+
+
+@given(_LEVEL_3)
+def test_property_key_and_string_slots_round_trip_and_rename_every_key_in_order(
+    value: dict[str, Any],
+) -> None:
+    original = copy.deepcopy(value)
+    slots, finalizers = _key_and_string_slots(value)
+    prepared = PreparedRequest(slots, finalizers)
+    assert prepared.texts() == _keys_and_strings_depth_first(original)
+    prepared.apply(prepared.texts())
+    assert value == original
+    assert _keys_and_strings_depth_first(value) == _keys_and_strings_depth_first(original)
+    new_texts = [f"[SLOT_{number}]" for number in range(1, len(slots) + 1)]
+    prepared.apply(new_texts)
+    assert _keys_and_strings_depth_first(value) == new_texts
+    assert _shape(value) == _shape(original)
 
 
 _FORBIDDEN_IMPORTS = ("aliasgate.proxy", "httpx", "starlette", "socket", "urllib", "os", "io")

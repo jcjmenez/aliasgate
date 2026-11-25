@@ -22,16 +22,17 @@ class AuditResult:
 
 
 def audit_outbound(payload: object, mapping: Mapping, *, min_length: int) -> AuditResult:
-    """Search every string value of the outbound JSON payload for the entities of the mapping.
+    """Search every string value and every key of the outbound JSON payload for the entities
+    of the mapping.
 
-    Every string value is searched, wherever it is, so a field no dialect processes is caught
-    too; keys are not. `LITERAL` entities and entities whose key is shorter than `min_length`
-    are skipped. An entity is found when its whole-term pattern matches (case-insensitive,
-    flexible whitespace, as propagation searches), or when its key matches the string after
-    NFKC normalisation and case folding, which also catches variants with the same key that
-    the pattern misses, such as "STRASSE" for "Straße". A capitalised entity is found only by
-    a match of its pattern that starts with an upper-case or title-case letter, as propagation
-    replaces it.
+    Every string value and every key is searched, wherever it is, so a field or key no dialect
+    processes is caught too. `LITERAL` entities and entities whose key is shorter than
+    `min_length` are skipped. An entity is found when its whole-term pattern matches
+    (case-insensitive, flexible whitespace, as propagation searches), or when its key matches
+    the string after NFKC normalisation and case folding, which also catches variants with the
+    same key that the pattern misses, such as "STRASSE" for "Straße". A capitalised entity is
+    found only by a match of its pattern that starts with an upper-case or title-case letter,
+    as propagation replaces it.
     """
     entities = [
         entity
@@ -40,7 +41,7 @@ def audit_outbound(payload: object, mapping: Mapping, *, min_length: int) -> Aud
     ]
     if not entities:
         return AuditResult(0, ())
-    strings = list(_string_values(payload))
+    strings = list(_strings(payload))
     folded = [_fold(text) for text in strings]
     # One alternation per side finds whether any entity may occur, in one pass per string.
     # Only when one may is each entity searched on its own, to decide and count. Capitalised
@@ -79,14 +80,16 @@ def _fold(text: str) -> str:
     return unicodedata.normalize("NFKC", text).casefold()
 
 
-def _string_values(payload: object) -> Iterator[str]:
-    """Every string value of a JSON value, iteratively, so that nesting depth is no limit."""
+def _strings(payload: object) -> Iterator[str]:
+    """Every string value and every key of a JSON value, iteratively, so that nesting depth is
+    no limit."""
     stack = [payload]
     while stack:
         value = stack.pop()
         if isinstance(value, str):
             yield value
         elif isinstance(value, dict):
+            stack.extend(value)
             stack.extend(value.values())
         elif isinstance(value, list):
             stack.extend(value)

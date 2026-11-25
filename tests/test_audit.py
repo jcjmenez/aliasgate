@@ -71,9 +71,21 @@ def test_only_whole_terms_match(text: str) -> None:
     assert result.leaked_entities == 0
 
 
-def test_keys_are_not_checked() -> None:
+def test_a_detected_value_in_a_key_is_found() -> None:
     body = {"Juan Pérez": "[PERSON_1]", "nested": [{"ACME Corporation": 1}]}
-    assert audit_outbound(body, _mapping(*MAPPING_ENTITIES), min_length=3).leaked_entities == 0
+    assert audit_outbound(body, _mapping(*MAPPING_ENTITIES), min_length=3).leaked_entities == 2
+
+
+def test_a_key_holding_the_folded_form_of_an_entity_is_found() -> None:
+    body = {"address": {"STRASSE": "[ADDRESS_1]"}}
+    result = audit_outbound(body, _mapping(("ADDRESS", "Straße")), min_length=3)
+    assert result == AuditResult(1, ("ADDRESS",))
+
+
+def test_a_key_is_skipped_when_the_entity_is_shorter_than_the_minimum() -> None:
+    mapping = _mapping(("PERSON", "Al"))
+    assert audit_outbound({"Al": "x"}, mapping, min_length=3).leaked_entities == 0
+    assert audit_outbound({"Al": "x"}, mapping, min_length=2).leaked_entities == 1
 
 
 def test_entities_shorter_than_the_minimum_are_skipped() -> None:

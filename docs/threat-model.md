@@ -37,7 +37,11 @@ These are known and not fully solved. A deployment must accept or mitigate each 
    (`Stone` for `Stone Logistics Ltd`); acronyms (`GHS` for `Global Harbour Shipping`); the
    parts of a hyphenated organisation name (`Yang` of `Yang-Clark Ltd`); words shorter than
    `min_propagation_length`; and, in lower case, the words of an organisation that a detector
-   returns in lower case.
+   returns in lower case. The ML layer does not read label slots, the keys of tool-call
+   arguments, tool inputs, input examples and metadata: a name that only that layer would find,
+   written only in such a key, is sent as written. A name the ML layer finds in the text is
+   still replaced in a key by propagation, and dictionary terms and rule-detected values are
+   found in keys too.
 2. **Identification by context.** Job titles, rare events, small-town references or combinations
    of facts can identify a person without any detectable entity. No mitigation in the gateway.
 3. **Content the gateway cannot read.** Images, audio and file attachments are rejected by
@@ -73,13 +77,14 @@ These are known and not fully solved. A deployment must accept or mitigate each 
    placeholder beyond the tolerant pattern. The user then sees a placeholder. This is a visible
    failure, not a leak; it is counted in metrics.
 9. **Fields forwarded unchanged.** The gateway pseudonymises the request fields that carry
-   text for the model, message names, stop sequences and metadata values included, but some
-   fields are sent as they are ([usage](usage.md#fields-forwarded-unchanged)): tool and function
-   names, parameter names, the `enum`, `const`, `default`, `examples` and `title` values of
-   schemas, the keys of objects, and ids. A value detected elsewhere in the request that also
-   appears in one of them makes the leak audit reject the request; a value that appears only
-   there is sent unchanged. The end user's approximate location is removed by default
-   (`policy.strip_user_location`).
+   text for the model, message names, stop sequences and metadata included, and the keys of
+   the objects that hold data: tool-call arguments, tool inputs, input examples and metadata.
+   Some fields are sent as they are ([usage](usage.md#fields-forwarded-unchanged)): tool and
+   function names, parameter names, the `enum`, `const`, `default`, `examples` and `title`
+   values of schemas, the keys of other objects, and ids. A value detected elsewhere in the
+   request that also appears in one of them, as a value or as a key, makes the leak audit
+   reject the request; a value that appears only there is sent unchanged. The end user's
+   approximate location is removed by default (`policy.strip_user_location`).
 
 ## Security invariants
 

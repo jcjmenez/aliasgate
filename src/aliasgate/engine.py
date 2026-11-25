@@ -6,7 +6,7 @@ import re
 import time
 from bisect import bisect_left
 from collections import Counter, abc
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 
 from aliasgate.common_words import COMMON_WORDS
@@ -86,6 +86,10 @@ class Pseudonymizer:
     With `person_tokens`, the shorter forms of a detected person's name become variants of
     that person, and with `org_tokens` those of a detected organisation's name become variants
     of that organisation (architecture §4.3).
+
+    `contextual` detectors need the text around a value: they run after `detectors`, and never
+    on the texts whose indexes are given as `labels`. Everything after detection treats every
+    text alike, so a value detected in one text is replaced in a label too (architecture §4.1).
     """
 
     def __init__(
@@ -97,10 +101,12 @@ class Pseudonymizer:
         min_propagation_length: int = 3,
         person_tokens: bool = False,
         org_tokens: bool = False,
+        contextual: Sequence[Detector] = (),
     ) -> None:
         if min_propagation_length < 1:
             raise ValueError("min_propagation_length must be at least 1")
         self._detectors: tuple[Detector, ...] = (LiteralDetector(), *detectors)
+        self._contextual: tuple[Detector, ...] = tuple(contextual)
         self._allow_keys = frozenset(normalize_key(term) for term in allow_list) - {""}
         self._propagate = propagate
         self._min_propagation_length = min_propagation_length
@@ -109,22 +115,29 @@ class Pseudonymizer:
 
     @property
     def detectors(self) -> tuple[Detector, ...]:
-        """The detectors in the order they run; the literal detector comes first."""
-        return self._detectors
+        """The detectors in the order they run: the literal detector, then the others, then
+        the contextual ones."""
+        return (*self._detectors, *self._contextual)
 
-    def analyze(self, texts: Sequence[str]) -> list[list[Span]]:
+    def analyze(self, texts: Sequence[str], *, labels: Collection[int] = ()) -> list[list[Span]]:
         """The spans `pseudonymize` replaces in each text, sorted by start, without replacing.
 
         Detected spans keep their detector's score, source and priority but carry the type of
         the entity they are replaced as (that of its first occurrence); propagated spans have
-        source "propagation". Fails closed like `pseudonymize`.
+        source "propagation". Takes the same `labels` and fails closed like `pseudonymize`.
         """
-        return [[span for span, _ in found] for found in self._analyze(tuple(texts))[1]]
+        return [[span for span, _ in found] for found in self._analyze(tuple(texts), labels)[1]]
 
-    def pseudonymize(self, texts: Sequence[str]) -> PseudonymizedBatch:
-        """Pseudonymise all texts of one request as a batch (architecture §4.3)."""
+    def pseudonymize(
+        self, texts: Sequence[str], *, labels: Collection[int] = ()
+    ) -> PseudonymizedBatch:
+        """Pseudonymise all texts of one request as a batch (architecture §4.3).
+
+        Contextual detectors do not run on the texts whose indexes are in `labels`; an index
+        outside the texts raises ValueError.
+        """
         batch = tuple(texts)
-        mapping, occurrences, seconds = self._analyze(batch)
+        mapping, occurrences, seconds = self._analyze(batch, labels)
         counts = Counter(
             (span.entity_type, span.source) for found in occurrences for span, _ in found
         )
@@ -135,15 +148,22 @@ class Pseudonymizer:
         )
 
     def _analyze(
-        self, batch: tuple[str, ...]
+        self, batch: tuple[str, ...], labels: Collection[int]
     ) -> tuple[Mapping, list[list[_Occurrence]], dict[str, float]]:
         """Detect, assign placeholders and propagate: everything but the replacement.
 
         Returns the mapping, each text's occurrences sorted by start, and detector timings.
         `analyze` and `pseudonymize` are both views of this one result, so they cannot drift.
         """
-        seconds = dict.fromkeys((detector.name for detector in self._detectors), 0.0)
-        resolved = [self._detect(text, seconds) for text in batch]
+        label_indexes = frozenset(labels)
+        if not all(0 <= index < len(batch) for index in label_indexes):
+            raise ValueError("labels must be indexes of the texts")
+        every = self.detectors
+        seconds = dict.fromkeys((detector.name for detector in every), 0.0)
+        resolved = [
+            self._detect(text, self._detectors if index in label_indexes else every, seconds)
+            for index, text in enumerate(batch)
+        ]
         mapping = Mapping()
         linker = (
             _NameLinker(
@@ -178,9 +198,11 @@ class Pseudonymizer:
             found.sort(key=lambda occurrence: occurrence[0].start)
         return mapping, occurrences, seconds
 
-    def _detect(self, text: str, seconds: dict[str, float]) -> list[Span]:
+    def _detect(
+        self, text: str, detectors: tuple[Detector, ...], seconds: dict[str, float]
+    ) -> list[Span]:
         spans: list[Span] = []
-        for detector in self._detectors:
+        for detector in detectors:
             started = time.perf_counter()
             try:
                 found = list(detector.detect(text))

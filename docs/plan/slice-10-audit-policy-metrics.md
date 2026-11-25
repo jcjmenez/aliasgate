@@ -41,7 +41,8 @@ def audit_outbound(payload: Any, mapping: Mapping, *, min_length: int) -> AuditR
 ```
 
 - Walk **every** string value in the whole outbound body, not only the slots. This is the point
-  of the audit: it catches a field the dialect forgot. Keys are not checked.
+  of the audit: it catches a field the dialect forgot. Keys are not checked. (**Changed in
+  [slice 21](slice-21-object-keys.md):** every key is searched as well, the same two ways.)
 - For each non-`LITERAL` entity whose key length is ≥ `min_length`, search with
   `build_term_pattern(entity.surface)`.
 - Known blind spot (found in slices 01 to 04): entity keys use `normalize_key` (full

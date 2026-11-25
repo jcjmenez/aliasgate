@@ -26,7 +26,8 @@ _WARM_UP_WORDS = (
 
 
 def build_pseudonymizer(settings: Settings) -> Pseudonymizer:
-    """Wire detectors in this order: dictionary (if any terms), rules, ML (if enabled).
+    """Wire detectors in this order: dictionary (if any terms), rules, ML (if enabled). The ML
+    detector is contextual, so it does not run on label slots.
 
     The ML model is loaded here, at start-up, and run once on a synthetic text of one full
     window, so that a missing extra, a broken model or a window the model would truncate stops
@@ -43,8 +44,7 @@ def build_pseudonymizer(settings: Settings) -> Pseudonymizer:
             phone_regions=detection.rules.phone_regions,
         )
     )
-    if detection.ml.enabled:
-        detectors.append(_ml_detector(detection.ml))
+    contextual = [_ml_detector(detection.ml)] if detection.ml.enabled else []
     return Pseudonymizer(
         detectors,
         allow_list=detection.allow_list,
@@ -52,6 +52,7 @@ def build_pseudonymizer(settings: Settings) -> Pseudonymizer:
         min_propagation_length=detection.min_propagation_length,
         person_tokens=detection.person_tokens,
         org_tokens=detection.org_tokens,
+        contextual=contextual,
     )
 
 

@@ -8,12 +8,15 @@ Slot order, which placeholder numbering follows:
 
 1. `system`: the string, or each of its `text` blocks in order;
 2. each message in order (any role): `content` as a string, or its blocks in order, where a
-   `text` block is one slot, a `tool_use` block gives a slot per string value of its `input`,
-   and a `tool_result` block gives its `content` string, or its inner blocks by the same rules;
-3. if the policy says so, every `description` string inside `tools`, then every other string
-   value of each tool's `input_examples`, then every `description` string inside
+   `text` block is one slot, a `tool_use` block gives a slot per key and string value of its
+   `input`, each key right before its value, and a `tool_result` block gives its `content`
+   string, or its inner blocks by the same rules;
+3. if the policy says so, every `description` string inside `tools`, then every key and every
+   other string value of each tool's `input_examples`, then every `description` string inside
    `output_config.format`;
 4. each string of `stop_sequences`.
+
+Keys of `tool_use` inputs and of `input_examples` are label slots, and are renamed in place.
 
 With the policy's `strip_user_location`, every tool loses its `user_location`.
 
@@ -25,6 +28,7 @@ position (for example `messages[2].content[0].input`), never the content.
 """
 
 import json
+from collections.abc import Callable
 from typing import Any, Final
 
 from aliasgate.dialects.base import (
@@ -36,10 +40,9 @@ from aliasgate.dialects.base import (
     UnsupportedContentError,
     key_slot,
     restore_all_strings,
-    slots_for_json_strings,
     slots_for_key_strings,
+    slots_for_keys_and_strings,
     slots_for_string_list,
-    slots_for_strings_not_under,
 )
 from aliasgate.dialects.sse import SSEEvent
 from aliasgate.engine import count_unresolved, restore
@@ -70,13 +73,14 @@ def _kind(block: dict[str, Any], where: str) -> str:
 
 
 class _Collector:
-    """Accumulates the slots of one request while walking it."""
+    """Accumulates the slots and finalizers of one request while walking it."""
 
-    __slots__ = ("policy", "slots")
+    __slots__ = ("finalizers", "policy", "slots")
 
     def __init__(self, policy: Policy) -> None:
         self.policy = policy
         self.slots: list[Slot] = []
+        self.finalizers: list[Callable[[], None]] = []
 
     def system(self, body: dict[str, Any]) -> None:
         value = body.get("system")
@@ -119,7 +123,9 @@ class _Collector:
             tool_input = block.get("input")
             if not isinstance(tool_input, dict):
                 raise MalformedRequestError(f"{where}.input: expected an object")
-            self.slots.extend(slots_for_json_strings(tool_input))
+            self.slots.extend(
+                slots_for_keys_and_strings(tool_input, self.finalizers, f"{where}.input")
+            )
         elif kind == "tool_result":
             self.content(block, where)
         elif kind not in _SIGNED_BLOCKS:
@@ -150,14 +156,19 @@ class _Collector:
                 self.slots.extend(slots_for_key_strings(output_format, "description"))
 
     def input_examples(self, definitions: list[Any]) -> None:
-        """Every string of each tool's `input_examples`, except those under a `description`
-        key, which are already slots as tool descriptions."""
+        """Every key and string of each tool's `input_examples`, except the strings under a
+        `description` key, which are already slots as tool descriptions."""
         for index, tool in enumerate(definitions):
             if not isinstance(tool, dict) or (examples := tool.get("input_examples")) is None:
                 continue
+            where = f"tools[{index}].input_examples"
             if not isinstance(examples, list):
-                raise MalformedRequestError(f"tools[{index}].input_examples: expected a list")
-            self.slots.extend(slots_for_strings_not_under(examples, "description"))
+                raise MalformedRequestError(f"{where}: expected a list")
+            self.slots.extend(
+                slots_for_keys_and_strings(
+                    examples, self.finalizers, where, skip_under="description"
+                )
+            )
 
     def stop_sequences(self, body: dict[str, Any]) -> None:
         value = body.get("stop_sequences")
@@ -195,8 +206,8 @@ class AnthropicMessagesDialect:
 
         Raises UnsupportedContentError for uninspectable content under policy `block`, and
         MalformedRequestError when a walked field has the wrong shape. Changes `body` only
-        through the returned slots, and by removing the identifier and the location. Thinking
-        blocks are never read or written.
+        through the returned slots and finalizers, and by removing the identifier and the
+        location. Thinking blocks are never read or written.
         """
         if not isinstance(body, dict):
             raise MalformedRequestError("body: expected an object")
@@ -215,11 +226,11 @@ class AnthropicMessagesDialect:
             _strip_user_id(body)
         if policy.strip_user_location:
             _strip_user_location(body)
-        return PreparedRequest(collector.slots, [])
+        return PreparedRequest(collector.slots, collector.finalizers)
 
     def restore_response(self, body: dict[str, Any], mapping: Mapping) -> None:
-        """Restore, in place, the `text` of text blocks, every string of `tool_use` inputs and
-        the `stop_sequence` the model met.
+        """Restore, in place, the `text` of text blocks, every key and string of `tool_use`
+        inputs and the `stop_sequence` the model met.
 
         Everything else (thinking blocks, citations, server tool blocks, usage, ids) is left
         untouched, and so is a body without `content`; use `restore_all_strings` for errors.
@@ -330,7 +341,7 @@ class AnthropicStreamTransformer:
             if isinstance(tool_input, dict) and tool_input:
                 self._settled += sum(
                     count_unresolved(slot.get(), self._mapping)
-                    for slot in slots_for_json_strings(tool_input)
+                    for slot in slots_for_keys_and_strings(tool_input, [], "input")
                 )
                 block["input"] = restore_all_strings(tool_input, self._mapping)
                 changed = block["input"] != tool_input

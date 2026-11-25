@@ -17,7 +17,7 @@ from aliasgate.dialects.openai_chat import OpenAIChatDialect
 from aliasgate.engine import Pseudonymizer
 from aliasgate.proxy import app as app_module
 from aliasgate.proxy.app import create_app
-from fakes import FailingDetector
+from fakes import FailingDetector, WordListDetector
 
 VALUES = ("Juan Pérez", "juan.perez@example.com", "ACME Corporation")
 HAPPY_TEXT = "Write to Juan Pérez (juan.perez@example.com) at ACME Corporation."
@@ -664,3 +664,111 @@ async def test_a_lower_case_shorter_form_reaches_the_upstream_as_a_variant_and_c
     ]
     assert "larry" not in route.calls.last.request.content.decode().casefold()
     assert _content(response) == "larry"
+
+
+# Keys of data objects (slice 21)
+
+
+def _keyed_request() -> dict[str, Any]:
+    call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "f", "arguments": '{"attendees": {"Juan Pérez": "accepted"}}'},
+    }
+    body = chat_request(
+        "Escribe a Juan Pérez sobre el pedido.",
+        metadata={"Juan Pérez": "vip", "maria.lopez@example.org": "x"},
+    )
+    body["messages"].append({"role": "assistant", "content": None, "tool_calls": [call]})
+    return body
+
+
+async def test_detected_values_in_argument_and_metadata_keys_are_pseudonymised(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post(CHAT).respond(json=chat_response("ok"))
+    response = await client.post(CHAT, json=_keyed_request())
+
+    assert response.status_code == 200
+    sent = _sent(route)
+    assert sent["messages"][0]["content"] == "Escribe a [PERSON_1] sobre el pedido."
+    assert sent["metadata"] == {"[PERSON_1]": "vip", "[EMAIL_1]": "x"}
+    arguments = sent["messages"][1]["tool_calls"][0]["function"]["arguments"]
+    assert arguments == '{"attendees":{"[PERSON_1]":"accepted"}}'
+    raw = route.calls.last.request.content.decode()
+    for value in (*VALUES, "Pérez", "maria.lopez"):
+        assert value not in raw
+
+
+async def test_a_request_whose_keys_hold_no_detected_value_is_forwarded_as_before(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post(CHAT).respond(json=chat_response("ok"))
+    call = {"id": "c", "type": "function", "function": {"name": "f", "arguments": '{"to": "x"}'}}
+    body = chat_request("hello", metadata={"ticket": "T-0001"})
+    body["messages"].append({"role": "assistant", "content": None, "tool_calls": [call]})
+    assert (await client.post(CHAT, json=body)).status_code == 200
+    sent = _sent(route)
+    assert sent["metadata"] == {"ticket": "T-0001"}
+    assert sent["messages"][1]["tool_calls"][0]["function"]["arguments"] == '{"to":"x"}'
+
+
+async def test_a_detected_value_in_a_schema_property_name_gets_leak_audit_failed(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    upstream.post(CHAT).respond(json=chat_response("ok"))
+    parameters = {
+        "type": "object",
+        "properties": {"Juan Pérez": {"type": "string"}, "note": {"type": "string"}},
+        "required": ["note"],
+    }
+    tool = {"type": "function", "function": {"name": "f", "parameters": parameters}}
+    body = chat_request("Escribe a Juan Pérez.", tools=[tool])
+    response = await client.post(CHAT, json=body)
+    assert response.status_code == 500
+    assert _error(response)["code"] == "leak_audit_failed"
+    assert "Juan" not in response.text
+    assert upstream.calls.call_count == 0
+
+
+async def test_two_metadata_keys_that_become_the_same_get_400_and_nothing_is_forwarded(
+    make_client: ClientFactory, upstream: respx.MockRouter, tmp_path: Path
+) -> None:
+    (tmp_path / "orgs.yaml").write_text(
+        "terms:\n  - term: ACME\n    type: ORG\n  - term: Juan Pérez\n    type: PERSON\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "orgs-config.yaml"
+    config.write_text("detection:\n  dictionary:\n    files: [orgs.yaml]\n", encoding="utf-8")
+    upstream.post(CHAT).respond(json=chat_response("ok"))
+    async with make_client(load_settings(config, env={})) as client:
+        response = await client.post(
+            CHAT, json=chat_request("hello", metadata={"ACME": "a", "Acme": "b"})
+        )
+    assert response.status_code == 400
+    error = _error(response)
+    assert error["code"] == "malformed_request"
+    assert error["message"] == (
+        "Malformed request: metadata: two keys of one object would become the same"
+    )
+    assert "ACME" not in response.text
+    assert "Acme" not in response.text
+    assert upstream.calls.call_count == 0
+
+
+async def test_the_engine_receives_the_labels_of_the_request(
+    make_client: ClientFactory, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post(CHAT).respond(json=chat_response("ok"))
+    owner = WordListDetector({"owner": "PERSON"}, name="context")
+    engine = Pseudonymizer([], contextual=[owner])
+    call = {"id": "c", "type": "function", "function": {"name": "f", "arguments": '{"owner": "x"}'}}
+    body = chat_request("hello", metadata={"owner": "y"})
+    body["messages"].append({"role": "assistant", "content": None, "tool_calls": [call]})
+    async with make_client(pseudonymizer=engine) as client:
+        assert (await client.post(CHAT, json=body)).status_code == 200
+        sent = _sent(route)
+        assert sent["messages"][1]["tool_calls"][0]["function"]["arguments"] == '{"owner":"x"}'
+        assert sent["metadata"] == {"owner": "y"}
+        assert (await client.post(CHAT, json=chat_request("the owner"))).status_code == 200
+        assert _sent(route)["messages"][0]["content"] == "the [PERSON_1]"
