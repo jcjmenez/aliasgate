@@ -158,6 +158,23 @@ and Anthropic tool `input_examples`, and removes `user_location` by default
 with the same key would become equal placeholders), object keys (metadata keys, the keys of
 tool-call arguments), and an option to forward a field unchanged.
 
+**Keys cut into [slice 21](slice-21-object-keys.md), schema values into
+[slice 22](slice-22-schema-values.md).** A reproduction found that the leak audit did not check
+keys. A value detected in the conversation left the gateway unchanged as an OpenAI `metadata`
+key, an Anthropic `tool_use` input key or an `input_examples` key. Slice 21 audits every key and
+pseudonymises the keys of data objects (tool-call arguments, tool inputs, input examples,
+metadata) as label slots, which the ML layer does not read because it took 22 of 59 common
+field names for entities. Slice 22 pseudonymises `enum`, `const`, `default` and `examples` as
+label slots, and `title` and `$comment` as text. Still open after both: an option to forward a
+field unchanged.
+
+**Structured output answers are restored without JSON escaping** (found while specifying slice
+22). An OpenAI `message.content` under a `json_schema` `response_format`, or an Anthropic text
+block under `output_config`, is JSON text. Plain `restore` inserts a surface holding `"` or `\`
+unescaped (`Ana "La Jefa" Ruiz`), so the client gets invalid JSON. Nothing leaks. The dialects'
+`restore_response` does not know the request's output format, so a fix changes that contract;
+the streamed path needs the same care.
+
 ## 11. Operations
 
 OpenTelemetry tracing (attributes limited to counts and types), Helm chart, hot reload of
