@@ -32,6 +32,8 @@ Read [AGENTS.md](../../AGENTS.md) first. Its rules apply to every slice.
 | 18 | [slice-18-org-evaluation.md](slice-18-org-evaluation.md) | Organisation mentions evaluation set | 17 | done |
 | 19 | [slice-19-org-forms.md](slice-19-org-forms.md) | Organisation name forms and linking | 18 | done |
 | 20 | [slice-20-request-fields.md](slice-20-request-fields.md) | Request fields forwarded unchanged | 19 | done |
+| 21 | [slice-21-object-keys.md](slice-21-object-keys.md) | Object keys and label slots | 20 | planned |
+| 22 | [slice-22-schema-values.md](slice-22-schema-values.md) | Schema values (`enum`, `const`, `default`, `examples`, `title`) | 21 | planned |
 
 Slices 02 and 03 can be done in either order. Slices 09 and 11 can be done any time after 04.
 The first usable end-to-end product exists after slice 06; the first one worth deploying, after
