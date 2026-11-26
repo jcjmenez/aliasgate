@@ -223,3 +223,80 @@ matching on normalised, case-folded text and mapping the offsets back to the ori
 composes across characters, so this cannot be done one character at a time. The audit also
 cannot see a value that is JSON-escaped inside a string (`P\u00e9rez` in a tool result that
 is itself a JSON document).
+
+## 17. ML false positives on fields forwarded unchanged
+
+**Problem** (found while implementing slice 22). With the ML layer on, a tool described as
+`Creates a user.` is rejected with 500 `leak_audit_failed` on both routes. The model takes
+`user` for a person, the description becomes `Creates a [PERSON_1].`, and the leak audit finds
+`user` in `"role": "user"`, which is never a slot. Nothing leaks, but the request cannot be
+sent. Any false positive whose key equals a string the gateway forwards unchanged does the
+same: a message role, `model`, a tool name, a schema property name or a `required` entry.
+[Usage §6.2](../usage.md#62-the-ml-detector) says that an extra detection only costs utility;
+here it costs the request.
+
+**Measured** (2026-11-26, synthetic texts, the default model at its pinned revision, threshold
+0.4, through the gateway with a mocked upstream; the scripts lived outside the repository):
+
+- 80 short texts, 40 in English and 40 in Spanish, using user/usuario, assistant/asistente,
+  system/sistema, tool/herramienta, function/función, model/modelo and developer. Each was sent
+  as a tool description, or as the system prompt and as the last user message, in a request
+  with system, user, assistant (with a tool call) and tool turns, on both routes: 240 requests.
+  The same request with neutral texts is forwarded. 68 were rejected: 54 of 120 in English, 14
+  of 120 in Spanish. The audit found the value in `messages[].role` in 62 (`user` in 36,
+  `assistant` in 26), in `model` in 4 (`Claude` in `claude-sonnet-5-5` and `GPT` in
+  `gpt-4.1-mini`, both taken for persons) and in the tool name in 2 (`create_user`, named in a
+  Spanish description and taken for a person). The model took `usuario` and `asistente` for
+  persons in most Spanish texts, which is harmless because roles are English; the Spanish
+  rejections came from English words in Spanish text (`un user`, `el assistant`), `GPT` and
+  `create_user`. It never took `system`, `tool` or `function` alone, and took `developer`
+  twice, with no developer message in the request. The scores of the `user` and `assistant`
+  spans were 0.48 to 0.92, so no threshold that keeps recall separates them.
+- 20 common parameter names (`customer`, `owner`, `plan`, `team`, ...), each with a short
+  English or Spanish description (`Customer name.`, `Nombre del cliente.`), as the one
+  parameter of a tool whose call is in the history, on both routes: 80 requests. 22 were
+  rejected, all English: 11 of 20 names on both routes (`customer`, `owner`, `plan`, `team`,
+  `manager`, `contact`, `project`, `vendor`, `recipient`, `department`, `client`). The model
+  takes `Customer name` for a person, name linking makes the argument key `customer` (a label
+  slot) a variant of it, and the audit finds `customer` in the schema's property name and in
+  `required`. When no slot held the name on its own (the call in the history used another
+  argument name), 2 of 20 were rejected (`manager` and `recipient`, which the model took
+  alone). None of these words is on the common or generic
+  word lists of name linking.
+
+**Options.**
+
+- **A. The audit skips protocol words.** A string that is exactly a role, a content or schema
+  type, or a key of the request shapes, compared case-sensitively, is not searched; or, per
+  path, the closed values of `role` and `type`, which each dialect would have to declare,
+  because the audit is a core module. Simulated: 68 rejections become 6. The false positive
+  still reaches the provider (`Creates a [PERSON_1].`), and propagation still replaces the word
+  in every text of the request (`Ask the [PERSON_1] politely.`). It changes the last check
+  before forwarding, and the word list must cover every key of both APIs (Anthropic's top-level
+  `system` included).
+- **B. Contextual detectors never report a protocol word.** The engine drops a span of a
+  contextual detector whose key is `system`, `developer`, `user`, `assistant`, `tool` or
+  `function`, as it drops allow-listed spans, before overlap resolution and name linking.
+  Simulated: 68 rejections become the same 6, and the text is forwarded as written. A value
+  whose whole key is `user` is never a name; longer spans (`current user`, `User Group Ltd`)
+  are kept, and dictionary and rule spans are not affected. The same words in
+  `detection.allow_list` work today (simulated: the same 6 left), but the allow list applies to
+  every detector, and an operator's own list replaces a default one as a whole.
+- **C. B, plus the strings each request forwards unchanged.** The dialect would list the
+  model, tool names, property names and `required` entries, and the engine would drop
+  contextual spans and name forms whose key equals one of them. That clears the remaining 6 and
+  the 22 parameter-name rejections, but turns a rejection into a leak: a name that only the ML
+  layer finds and that is also a property name or a tool name (the shape of slice 21's
+  property `Juan Pérez` listed in `required`) would be forwarded in the text as well.
+  Rejected: it does not fail closed.
+
+**Recommendation.** B: a fixed list in a core module, applied to contextual detectors only,
+with the audit and the ML threshold unchanged, and usage §6.2 corrected to say that a false
+positive equal to a field forwarded unchanged rejects the request, with the allow list as the
+workaround. Still open after B, each a rejection and never a leak: the model's name in the text
+(`You are Claude` with a `claude-*` model; dropping `Claude` is unsafe because it is also a
+person's name), tool names mentioned in the text, and English parameter names that the model or
+name linking takes for entities. For parameter names, measure adding role nouns (`customer`,
+`owner`, `manager`, `contact`, `recipient`, `client`, `vendor`, `team`, `project`) to the common
+and generic word lists of name linking before considering renaming property names, which
+slice 21 left out of scope.
