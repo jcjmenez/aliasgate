@@ -19,6 +19,7 @@ from aliasgate.dialects.base import (
     slots_for_json_strings,
     slots_for_key_strings,
     slots_for_keys_and_strings,
+    slots_for_schema_values,
 )
 from aliasgate.mapping import Mapping
 
@@ -539,6 +540,367 @@ def test_property_key_and_string_slots_round_trip_and_rename_every_key_in_order(
     prepared.apply(new_texts)
     assert _keys_and_strings_depth_first(value) == new_texts
     assert _shape(value) == _shape(original)
+
+
+# Schema values (slice 22)
+
+_TEXT_KEYWORDS = ("title", "$comment")
+_VALUE_KEYWORDS = ("enum", "const", "default", "examples")
+_MAP_KEYWORDS = ("properties", "patternProperties", "$defs", "definitions", "dependentSchemas")
+_OBJECT_KEYWORDS = (
+    "additionalItems",
+    "additionalProperties",
+    "unevaluatedItems",
+    "unevaluatedProperties",
+    "contains",
+    "propertyNames",
+    "not",
+    "if",
+    "then",
+    "else",
+)
+_ARRAY_KEYWORDS = ("prefixItems", "allOf", "anyOf", "oneOf")
+_STRUCTURAL_KEYWORDS = (
+    "type",
+    "format",
+    "pattern",
+    "$ref",
+    "$id",
+    "$schema",
+    "$anchor",
+    "contentEncoding",
+    "contentMediaType",
+    "required",
+    "description",
+)
+
+
+def _schema_slots(schema: object) -> list[tuple[str, bool]]:
+    return [(slot.get(), slot.label) for slot in slots_for_schema_values(schema)]
+
+
+def test_titles_and_comments_are_text_slots_and_schema_values_are_label_slots() -> None:
+    schema = {
+        "title": "a title",
+        "$comment": "a comment",
+        "description": "a description",
+        "enum": ["first", 3, None, True, "second"],
+        "const": "a const",
+        "default": "a default",
+        "examples": ["an example", 2.5],
+    }
+    assert _schema_slots(schema) == [
+        ("a title", False),
+        ("a comment", False),
+        ("first", True),
+        ("second", True),
+        ("a const", True),
+        ("a default", True),
+        ("an example", True),
+    ]
+
+
+def test_numbers_booleans_nulls_and_a_title_that_is_not_a_string_are_never_slots() -> None:
+    schema: dict[str, Any] = {
+        "title": 5,
+        "$comment": ["not a string"],
+        "enum": [1, 2.5, False, None],
+        "const": 7,
+        "default": None,
+        "examples": True,
+    }
+    original = copy.deepcopy(schema)
+    assert slots_for_schema_values(schema) == []
+    assert schema == original
+
+
+def test_schema_value_slots_write_back_where_they_were_read() -> None:
+    schema: dict[str, Any] = {
+        "title": "t",
+        "enum": ["a", "b"],
+        "default": {"k": ["v"]},
+        "const": "c",
+        "$comment": "m",
+    }
+    for number, slot in enumerate(slots_for_schema_values(schema), start=1):
+        slot.set(f"[S_{number}]")
+    assert schema == {
+        "title": "[S_1]",
+        "enum": ["[S_2]", "[S_3]"],
+        "default": {"k": ["[S_4]"]},
+        "const": "[S_5]",
+        "$comment": "[S_6]",
+    }
+
+
+def test_values_inside_every_subschema_keyword_are_found_depth_first_in_key_order() -> None:
+    schema = {
+        "title": "root",
+        "properties": {
+            "a": {"title": "properties a", "items": {"enum": ["items object"]}},
+            "b": {"items": [{"enum": ["items array 1"]}, {"enum": ["items array 2"]}]},
+        },
+        "patternProperties": {"^x": {"enum": ["patternProperties"]}},
+        "$defs": {"d": {"enum": ["$defs"]}},
+        "definitions": {"d": {"enum": ["definitions"]}},
+        "dependentSchemas": {"d": {"enum": ["dependentSchemas"]}},
+        "prefixItems": [{"enum": ["prefixItems 1"]}, {"enum": ["prefixItems 2"]}],
+        "additionalItems": {"enum": ["additionalItems"]},
+        "additionalProperties": {"enum": ["additionalProperties"]},
+        "unevaluatedItems": {"enum": ["unevaluatedItems"]},
+        "unevaluatedProperties": {"enum": ["unevaluatedProperties"]},
+        "contains": {"enum": ["contains"]},
+        "propertyNames": {"enum": ["propertyNames"]},
+        "allOf": [{"enum": ["allOf"]}],
+        "anyOf": [{"enum": ["anyOf"]}],
+        "oneOf": [{"enum": ["oneOf"]}],
+        "not": {"enum": ["not"]},
+        "if": {"enum": ["if"]},
+        "then": {"enum": ["then"]},
+        "else": {"enum": ["else"]},
+        "$comment": "last",
+    }
+    assert [text for text, _ in _schema_slots(schema)] == [
+        "root",
+        "properties a",
+        "items object",
+        "items array 1",
+        "items array 2",
+        "patternProperties",
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+        "prefixItems 1",
+        "prefixItems 2",
+        "additionalItems",
+        "additionalProperties",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        "contains",
+        "propertyNames",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "not",
+        "if",
+        "then",
+        "else",
+        "last",
+    ]
+
+
+@pytest.mark.parametrize("keyword", _MAP_KEYWORDS)
+def test_each_value_of_a_schema_map_keyword_is_walked_as_a_schema(keyword: str) -> None:
+    schema = {keyword: {"x": {"enum": ["v"]}, "y": {"title": "w"}, "z": "not a schema"}}
+    assert _schema_slots(schema) == [("v", True), ("w", False)]
+
+
+@pytest.mark.parametrize("keyword", [*_OBJECT_KEYWORDS, "items"])
+def test_the_object_of_a_subschema_keyword_is_walked_as_a_schema(keyword: str) -> None:
+    assert _schema_slots({keyword: {"enum": ["v"], "title": "w"}}) == [("v", True), ("w", False)]
+
+
+@pytest.mark.parametrize("keyword", [*_ARRAY_KEYWORDS, "items"])
+def test_each_item_of_a_subschema_array_keyword_is_walked_as_a_schema(keyword: str) -> None:
+    schema = {keyword: [{"enum": ["v"]}, True, "not a schema", {"title": "w"}]}
+    assert _schema_slots(schema) == [("v", True), ("w", False)]
+
+
+@pytest.mark.parametrize(
+    "name", ["enum", "const", "default", "examples", "title", "$comment", "description"]
+)
+def test_a_property_named_like_a_keyword_is_walked_as_a_schema(name: str) -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            name: {
+                "type": "string",
+                "pattern": "^[a-z]+$",
+                "format": "email",
+                "title": "inner title",
+                "enum": ["inner value"],
+            }
+        },
+        "required": [name],
+    }
+    assert _schema_slots(schema) == [("inner title", False), ("inner value", True)]
+
+
+def test_strings_under_description_inside_values_are_skipped_and_keys_are_never_slots() -> None:
+    schema = {
+        "default": {
+            "description": "already a description slot",
+            "title": "a title inside a value",
+            "nested": {"description": "also skipped", "list": ["item"]},
+        },
+        "examples": [{"owner": "Ana Ruiz", "description": "skipped"}, {"description": ["listed"]}],
+        "enum": [{"description": "skipped"}, "plain"],
+        "const": {"key": "value"},
+    }
+    assert _schema_slots(schema) == [
+        ("a title inside a value", True),
+        ("item", True),
+        ("Ana Ruiz", True),
+        ("listed", True),
+        ("plain", True),
+        ("value", True),
+    ]
+
+
+@pytest.mark.parametrize("keyword", _STRUCTURAL_KEYWORDS)
+def test_structural_keywords_are_never_slots(keyword: str) -> None:
+    assert slots_for_schema_values({keyword: "Ana Ruiz", "items": {keyword: ["Ana Ruiz"]}}) == []
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        True,
+        False,
+        None,
+        7,
+        "a schema",
+        ["title"],
+        {"properties": ["title"]},
+        {"properties": {"a": True, "b": "title", "c": ["title"]}},
+        {"items": "title"},
+        {"allOf": {"x": {"title": "an object, not a list"}}},
+        {"not": [{"title": "a list, not an object"}]},
+        {"prefixItems": [True, "title", 1]},
+    ],
+)
+def test_a_schema_of_the_wrong_shape_gives_no_slot_and_raises_nothing(schema: object) -> None:
+    assert slots_for_schema_values(schema) == []
+
+
+def test_slots_for_schema_values_handles_deep_nesting_without_recursion() -> None:
+    schema: dict[str, Any] = {"enum": ["deep"]}
+    for _ in range(10_000):
+        schema = {"items": schema}
+    assert _schema_slots(schema) == [("deep", True)]
+
+
+def test_a_deep_value_inside_a_schema_value_does_not_exhaust_the_stack() -> None:
+    value: list[Any] = ["deep"]
+    for _ in range(5000):
+        value = [value]
+    assert _schema_slots({"default": value}) == [("deep", True)]
+
+
+def _value_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [
+            text
+            for key, item in value.items()
+            if not (key == "description" and isinstance(item, str))
+            for text in _value_strings(item)
+        ]
+    if isinstance(value, list):
+        return [text for item in value for text in _value_strings(item)]
+    return []
+
+
+_KEYWORD_NAMES = (*_TEXT_KEYWORDS, *_VALUE_KEYWORDS, "items", "description", "type")
+_VALUES = st.recursive(
+    _LEAVES,
+    lambda children: (
+        st.lists(children, max_size=3)
+        | st.dictionaries(
+            st.sampled_from(_KEYWORD_NAMES) | st.text(max_size=5), children, max_size=3
+        )
+    ),
+    max_leaves=8,
+)
+_ALL_KEYWORDS = (
+    *_TEXT_KEYWORDS,
+    *_VALUE_KEYWORDS,
+    *_MAP_KEYWORDS,
+    *_OBJECT_KEYWORDS,
+    *_ARRAY_KEYWORDS,
+    "items",
+    *_STRUCTURAL_KEYWORDS,
+)
+_LEAF_KEYWORDS = (*_TEXT_KEYWORDS, *_VALUE_KEYWORDS, *_STRUCTURAL_KEYWORDS)
+
+type _Expected = list[tuple[str, bool]]
+
+
+@st.composite
+def _schemas(draw: st.DrawFn, depth: int = 3) -> tuple[Any, _Expected]:
+    """A schema and the (text, label) pairs its slots must give, in order."""
+    if draw(st.integers(0, 9)) == 0:
+        return draw(_LEAVES | st.lists(_LEAVES, max_size=2)), []
+    schema: dict[str, Any] = {}
+    expected: _Expected = []
+    keywords = _ALL_KEYWORDS if depth > 0 else _LEAF_KEYWORDS
+    for keyword in draw(st.lists(st.sampled_from(keywords), unique=True, max_size=5)):
+        found: _Expected = []
+        value: Any
+        if keyword in _TEXT_KEYWORDS:
+            value = draw(st.text() | st.integers() | st.lists(st.text(), max_size=2))
+            if isinstance(value, str):
+                found = [(value, False)]
+        elif keyword in _VALUE_KEYWORDS:
+            value = draw(_VALUES)
+            found = [(text, True) for text in _value_strings(value)]
+        elif keyword in _STRUCTURAL_KEYWORDS:
+            value = draw(st.text() | st.lists(st.text(), max_size=2) | st.booleans())
+        else:
+            children = [draw(_schemas(depth - 1)) for _ in range(draw(st.integers(0, 3)))]
+            subschemas = [child for child, _ in children]
+            names = draw(
+                st.lists(
+                    st.sampled_from(_ALL_KEYWORDS) | st.text(max_size=5),
+                    unique=True,
+                    min_size=len(children),
+                    max_size=len(children),
+                )
+            )
+            as_map = dict(zip(names, subschemas, strict=True))
+            # The right shape first, then a wrong one that holds the same subschemas.
+            shapes: tuple[Any, Any]
+            if keyword in _MAP_KEYWORDS:
+                shapes = (as_map, subschemas)
+            elif keyword in _ARRAY_KEYWORDS:
+                shapes = (subschemas, as_map)
+            elif keyword == "items" and draw(st.booleans()):
+                shapes = (subschemas, "not a schema")
+            else:
+                children = children[:1]
+                wrong_shape = "not a schema" if keyword == "items" else subschemas
+                shapes = (subschemas[0] if subschemas else {}, wrong_shape)
+            wrong = draw(st.integers(0, 4)) == 0
+            value = shapes[wrong]
+            if not wrong:
+                found = [pair for _, pairs in children for pair in pairs]
+        schema[keyword] = value
+        expected.extend(found)
+    return schema, expected
+
+
+@given(_schemas())
+def test_property_schema_value_slots_are_the_titles_comments_and_values_and_nothing_else(
+    case: tuple[Any, _Expected],
+) -> None:
+    schema, expected = case
+    original = copy.deepcopy(schema)
+    slots = slots_for_schema_values(schema)
+    assert [(slot.get(), slot.label) for slot in slots] == expected
+    for slot in slots:
+        slot.set(slot.get())
+    assert schema == original
+    markers = [f"[SLOT_{number}]" for number in range(1, len(slots) + 1)]
+    for slot, marker in zip(slots, markers, strict=True):
+        slot.set(marker)
+    before, after = _strings_depth_first(original), _strings_depth_first(schema)
+    pairs = enumerate(zip(before, after, strict=True))
+    changed = [index for index, (old, new) in pairs if old != new]
+    assert [after[index] for index in changed] == markers
+    assert [before[index] for index in changed] == [text for text, _ in expected]
+    assert _keys(schema) == _keys(original)
+    assert _shape(schema) == _shape(original)
 
 
 _FORBIDDEN_IMPORTS = ("aliasgate.proxy", "httpx", "starlette", "socket", "urllib", "os", "io")

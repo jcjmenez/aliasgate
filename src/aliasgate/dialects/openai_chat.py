@@ -11,12 +11,15 @@ Slot order, which placeholder numbering follows:
    and every string value, each key right before its value;
 2. `prediction.content`;
 3. if the policy says so, every `description` string inside `tools`, then inside the legacy
-   `functions`, then inside `response_format`;
+   `functions`, then inside `response_format`; then the schema values (`title`, `$comment`,
+   `enum`, `const`, `default`, `examples`) of each tool's `function.parameters`, of each
+   legacy function's `parameters`, then of `response_format.json_schema.schema`;
 4. `stop`: the string, or each string of the list;
 5. each `metadata` key, then its value, in key order;
 6. `prompt_cache_key`.
 
-Keys of tool-call arguments and of `metadata` are label slots, and are renamed in place.
+Keys of tool-call arguments and of `metadata` are label slots, and are renamed in place. So are
+the `enum`, `const`, `default` and `examples` strings of schemas; schema keys never are.
 
 With the policy's `strip_user_location`, `web_search_options.user_location` is removed.
 
@@ -41,6 +44,7 @@ from aliasgate.dialects.base import (
     restore_all_strings,
     slots_for_key_strings,
     slots_for_keys_and_strings,
+    slots_for_schema_values,
     slots_for_string_list,
 )
 from aliasgate.dialects.sse import SSEEvent
@@ -170,6 +174,24 @@ class _Collector:
         if response_format is not None:
             response_format = _object(response_format, "response_format")
             self.slots.extend(slots_for_key_strings(response_format, "description"))
+        self.schema_values(body)
+
+    def schema_values(self, body: dict[str, Any]) -> None:
+        """The schema values of each tool's parameters, then of each legacy function's, then
+        of the response format's schema. A schema of another shape gives none."""
+        tools = body.get("tools")
+        for tool in tools if isinstance(tools, list) else ():
+            if isinstance(tool, dict) and isinstance(function := tool.get("function"), dict):
+                self.slots.extend(slots_for_schema_values(function.get("parameters")))
+        functions = body.get("functions")
+        for function in functions if isinstance(functions, list) else ():
+            if isinstance(function, dict):
+                self.slots.extend(slots_for_schema_values(function.get("parameters")))
+        response_format = body.get("response_format")
+        if isinstance(response_format, dict):
+            json_schema = response_format.get("json_schema")
+            if isinstance(json_schema, dict):
+                self.slots.extend(slots_for_schema_values(json_schema.get("schema")))
 
     def request_fields(self, body: dict[str, Any]) -> None:
         """`stop`, the `metadata` keys and values and `prompt_cache_key`, in that order."""

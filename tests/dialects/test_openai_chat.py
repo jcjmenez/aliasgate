@@ -278,7 +278,9 @@ def test_prediction_content_as_string_and_as_text_parts_is_a_slot() -> None:
     assert _texts(as_parts) == ["draft part"]
 
 
-def test_tool_descriptions_are_slots_and_names_enums_and_property_names_are_not() -> None:
+def test_tool_descriptions_then_schema_values_are_slots_and_names_and_property_names_are_not() -> (
+    None
+):
     body = _load("request_all_fields.json")
     body["messages"] = []
     for key in ("prediction", "stop", "metadata", "prompt_cache_key"):
@@ -291,6 +293,7 @@ def test_tool_descriptions_are_slots_and_names_enums_and_property_names_are_not(
         "function description",
         "query description",
         "response format description",
+        "enum value",
     ]
 
 
@@ -329,6 +332,7 @@ def test_slot_order_is_messages_then_prediction_then_tools_then_request_fields()
         "function description",
         "query description",
         "response format description",
+        "enum value",
         "stop text",
         "ticket",
         "T-0001",
@@ -372,7 +376,12 @@ def test_fields_outside_the_slots_are_never_touched() -> None:
     assert function["strict"] is True
     properties = function["parameters"]["properties"]
     assert list(properties) == ["to", "description"]
-    assert properties["to"]["enum"] == ["enum value"]
+    assert properties["to"]["enum"] == [written["enum value"]]
+    assert properties["to"]["type"] == "string"
+    assert properties["description"] == {
+        "type": "string",
+        "description": written["nested description"],
+    }
     assert function["parameters"]["required"] == ["to"]
     assert body["tools"][1]["custom"]["format"] == original["tools"][1]["custom"]["format"]
     assert body["functions"][0]["name"] == "lookup"
@@ -493,11 +502,16 @@ def test_response_format_descriptions_are_slots_at_any_depth() -> None:
         },
     }
     prepared = DIALECT.prepare_request(body, Policy())
-    assert prepared.texts() == ["outer", "inner"]
-    prepared.apply(["[A]", "[B]"])
+    assert prepared.texts() == ["outer", "inner", "x"]
+    prepared.apply(["[A]", "[B]", "[C]"])
     json_schema = body["response_format"]["json_schema"]
     assert json_schema["name"] == "reply"
-    assert json_schema["schema"]["properties"]["to"]["enum"] == ["x"]
+    assert json_schema["description"] == "[A]"
+    assert json_schema["schema"]["properties"]["to"] == {
+        "type": "string",
+        "description": "[B]",
+        "enum": ["[C]"],
+    }
 
 
 def test_a_text_response_format_adds_no_slot() -> None:
@@ -508,6 +522,121 @@ def test_response_format_is_not_read_with_tool_definitions_off() -> None:
     body: dict[str, Any] = {"messages": [], "response_format": "json"}
     assert _texts(body, Policy(tool_definitions=False)) == []
     assert body["response_format"] == "json"
+
+
+# Schema values (slice 22)
+
+
+def _schema(word: str) -> dict[str, Any]:
+    owner = {"type": "string", "description": f"{word} description", "enum": [f"{word} enum"]}
+    return {"type": "object", "title": f"{word} title", "properties": {"owner": owner}}
+
+
+def _schema_body() -> dict[str, Any]:
+    return {
+        "messages": [{"role": "user", "content": "text"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {"name": "a", "description": "tool", "parameters": _schema("tool")},
+            },
+            {"type": "function", "function": {"name": "b", "parameters": _schema("second tool")}},
+        ],
+        "functions": [{"name": "c", "parameters": _schema("function")}],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "r", "strict": True, "schema": _schema("response")},
+        },
+        "stop": "stop",
+    }
+
+
+def test_schema_values_come_after_every_description_and_before_the_request_fields() -> None:
+    assert _texts(_schema_body()) == [
+        "text",
+        "tool",
+        "tool description",
+        "second tool description",
+        "function description",
+        "response description",
+        "tool title",
+        "tool enum",
+        "second tool title",
+        "second tool enum",
+        "function title",
+        "function enum",
+        "response title",
+        "response enum",
+        "stop",
+    ]
+
+
+def test_with_tool_definitions_off_no_schema_value_is_a_slot() -> None:
+    body = _schema_body()
+    original = copy.deepcopy(body)
+    assert _texts(body, Policy(tool_definitions=False)) == ["text", "stop"]
+    assert body == original
+
+
+def test_schema_enum_slots_are_labels_and_title_slots_are_not() -> None:
+    prepared = DIALECT.prepare_request(_schema_body(), Policy())
+    texts = prepared.texts()
+    assert sorted(texts[index] for index in prepared.labels()) == [
+        "function enum",
+        "response enum",
+        "second tool enum",
+        "tool enum",
+    ]
+
+
+def test_schema_value_slots_write_back_into_each_schema() -> None:
+    body = _schema_body()
+    prepared = DIALECT.prepare_request(body, Policy())
+    prepared.apply([text.upper() for text in prepared.texts()])
+    assert body["tools"][1]["function"]["parameters"]["title"] == "SECOND TOOL TITLE"
+    owner = body["functions"][0]["parameters"]["properties"]["owner"]
+    assert owner == {
+        "type": "string",
+        "description": "FUNCTION DESCRIPTION",
+        "enum": ["FUNCTION ENUM"],
+    }
+    json_schema = body["response_format"]["json_schema"]
+    assert json_schema["schema"]["title"] == "RESPONSE TITLE"
+    assert json_schema["name"] == "r"
+    assert list(json_schema["schema"]["properties"]) == ["owner"]
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "a tool",
+        {"type": "function", "function": "f"},
+        {"type": "function", "function": {"name": "f"}},
+        {"type": "function", "function": {"name": "f", "parameters": True}},
+        {"type": "custom", "custom": {"name": "c", "format": {"type": "text", "title": "t"}}},
+    ],
+)
+def test_a_tool_without_a_parameters_object_gives_no_schema_slot(tool: Any) -> None:
+    body: dict[str, Any] = {
+        "messages": [],
+        "tools": [tool],
+        "functions": ["a function", {"name": "g"}, {"name": "h", "parameters": ["title"]}],
+        "response_format": {"type": "json_schema", "json_schema": {"name": "r"}},
+    }
+    original = copy.deepcopy(body)
+    assert _texts(body) == []
+    assert body == original
+
+
+@pytest.mark.parametrize("json_schema", [None, "a schema", ["title"]])
+def test_a_response_format_without_a_json_schema_object_gives_no_schema_slot(
+    json_schema: Any,
+) -> None:
+    body: dict[str, Any] = {
+        "messages": [],
+        "response_format": {"type": "json_schema", "json_schema": json_schema},
+    }
+    assert _texts(body) == []
 
 
 @pytest.mark.parametrize(
@@ -872,10 +1001,16 @@ def test_error_body_has_the_openai_error_shape() -> None:
 # Keys of data objects (slice 21)
 
 
-def test_argument_and_metadata_keys_are_the_only_label_slots() -> None:
+def test_argument_and_metadata_keys_and_schema_values_are_the_only_label_slots() -> None:
     prepared = DIALECT.prepare_request(_load("request_all_fields.json"), Policy())
     texts = prepared.texts()
-    assert [texts[index] for index in sorted(prepared.labels())] == ["to", "cc", "query", "ticket"]
+    assert [texts[index] for index in sorted(prepared.labels())] == [
+        "to",
+        "cc",
+        "query",
+        "enum value",
+        "ticket",
+    ]
 
 
 @pytest.mark.parametrize(

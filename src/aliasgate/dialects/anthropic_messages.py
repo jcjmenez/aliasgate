@@ -13,10 +13,12 @@ Slot order, which placeholder numbering follows:
    string, or its inner blocks by the same rules;
 3. if the policy says so, every `description` string inside `tools`, then every key and every
    other string value of each tool's `input_examples`, then every `description` string inside
-   `output_config.format`;
+   `output_config.format`; then the schema values (`title`, `$comment`, `enum`, `const`,
+   `default`, `examples`) of each tool's `input_schema`, then of `output_config.format.schema`;
 4. each string of `stop_sequences`.
 
-Keys of `tool_use` inputs and of `input_examples` are label slots, and are renamed in place.
+Keys of `tool_use` inputs and of `input_examples` are label slots, and are renamed in place. So
+are the `enum`, `const`, `default` and `examples` strings of schemas; schema keys never are.
 
 With the policy's `strip_user_location`, every tool loses its `user_location`.
 
@@ -42,6 +44,7 @@ from aliasgate.dialects.base import (
     restore_all_strings,
     slots_for_key_strings,
     slots_for_keys_and_strings,
+    slots_for_schema_values,
     slots_for_string_list,
 )
 from aliasgate.dialects.sse import SSEEvent
@@ -154,6 +157,18 @@ class _Collector:
             if output_format is not None:
                 output_format = _object(output_format, "output_config.format")
                 self.slots.extend(slots_for_key_strings(output_format, "description"))
+        self.schema_values(body)
+
+    def schema_values(self, body: dict[str, Any]) -> None:
+        """The schema values of each tool's `input_schema`, then of the output format's
+        schema. Server tools have none, and a schema of another shape gives none."""
+        tools = body.get("tools")
+        for tool in tools if isinstance(tools, list) else ():
+            if isinstance(tool, dict):
+                self.slots.extend(slots_for_schema_values(tool.get("input_schema")))
+        config = body.get("output_config")
+        if isinstance(config, dict) and isinstance(output_format := config.get("format"), dict):
+            self.slots.extend(slots_for_schema_values(output_format.get("schema")))
 
     def input_examples(self, definitions: list[Any]) -> None:
         """Every key and string of each tool's `input_examples`, except the strings under a

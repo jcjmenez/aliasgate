@@ -18,6 +18,11 @@ change the configuration or the command line.
   so a name detected in the text is replaced in a key too.
 - Two keys of one object that would become the same placeholder (`ACME` and `Acme`) are
   rejected with 400 `malformed_request`, naming the object's position and no key.
+- The `enum`, `const`, `default`, `examples`, `title` and `$comment` values of tool and output
+  schemas are pseudonymised under `policy.tool_definitions`, which renumbers requests whose
+  schemas hold detected values. `enum`, `const`, `default` and `examples` are read like keys
+  (not by the ML layer); a model constrained to an `enum` emits the placeholder and the answer
+  restores it. A request whose schemas hold no detected value is forwarded as before.
 
 ### Fixed
 
@@ -28,6 +33,9 @@ change the configuration or the command line.
   `leak_audit_failed`.
 - Non-streamed Anthropic answers returned placeholders in `tool_use` input keys to the client.
   They are restored now, as streamed answers and OpenAI answers already were.
+- A schema value holding a value detected elsewhere made the leak audit reject the request,
+  including every Anthropic tool whose `input_examples` repeat an `enum` value; and a value
+  that appeared only in a schema was forwarded unchanged.
 
 ## [0.7.0] - 2026-11-24
 

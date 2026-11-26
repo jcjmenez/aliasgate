@@ -139,6 +139,12 @@ and `metadata`: each key is a label slot right before its value, and keys are re
 before the arguments are re-serialised. Two keys of one object that would become the same raise
 `MalformedRequestError` at `apply`. The keys of other objects are still never slots.
 
+**Changed in [slice 22](slice-22-schema-values.md).** Under `tool_definitions`, after every `description` slot, the schema
+values of each tool's `function.parameters`, of each legacy function's `parameters` and of
+`response_format.json_schema.schema` are slots: `title` and `$comment` as text, and the strings
+of `enum`, `const`, `default` and `examples` as label slots. Names, property names and every
+other keyword are still never slots.
+
 ### `openai_chat.py`: response
 
 `restore_response(body, mapping)` mutates the body in place. For each choice:
@@ -186,7 +192,8 @@ Request side
 - tool result message (role `tool`) with string and with list content.
 - tool definitions: descriptions at function level and nested in `parameters.properties.*` are
   slots; `name`, `enum` values and property names are not. With `tool_definitions=False` no
-  tool slot exists.
+  tool slot exists. (**Changed in [slice 22](slice-22-schema-values.md):** `enum` values are label slots after every
+  description.)
 - slot order: messages first, then prediction, then tools. Assert the exact list of `texts()`
   for a fixture that has all of them.
 - `user` and `safety_identifier` removed by default, kept with `strip_user_identifiers=False`.
