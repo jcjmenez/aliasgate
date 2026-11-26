@@ -46,6 +46,10 @@ Slice 19 (v0.6.0 released). Every earlier slice is merged.
    `default`, `examples` and `title` in tool and output schemas are still forwarded unchanged.
    `enum` and `const` must stay exact for strict decoding, and two values with the same key
    would become two equal placeholders. They need their own design.
+   (**Changed in [slice 22](slice-22-schema-values.md):** all of them are read under `tool_definitions`, `enum`,
+   `const`, `default` and `examples` as label slots and `title` and `$comment` as text. The
+   model emits the placeholder and the answer restores it; two values with the same key share
+   one placeholder.)
 
 ## Decisions made while writing this spec
 
@@ -91,7 +95,7 @@ branch, info.version 2.3.0). Fields that carry text, and what v0.6.0 does with t
 | Anthropic | `tools[].input_examples` (any JSON) | forwarded |
 | Anthropic | `output_config.format.schema` (descriptions inside it) | forwarded |
 | Anthropic | `user_location` of the web search tools (`city`, `region`, `country`, `timezone`) | forwarded |
-| both | tool names, parameter names, `enum`/`const`/`default`/`examples`/`title` in schemas | forwarded (decision 4) |
+| both | tool names, parameter names, `enum`/`const`/`default`/`examples`/`title` in schemas | forwarded (decision 4; schema values pseudonymised since [slice 22](slice-22-schema-values.md)) |
 | both | ids: `tool_call_id`, `audio.id`, `container`, `user_profile_id`, `workspace_id`, `inference_geo` | forwarded, not user data |
 
 The OpenAI response does not repeat `stop` or `metadata`. `count_tokens` accepts the same
@@ -458,7 +462,7 @@ restored. Record the result in the slice file.
 ## Out of scope
 
 - `enum`, `const`, `default`, `examples` and `title` values in tool and output schemas
-  (decision 4, backlog §10).
+  (decision 4, backlog §10; done in [slice 22](slice-22-schema-values.md)).
 - Object keys: metadata keys and the keys of tool-call arguments and input examples.
 - An option to forward any of these fields unchanged.
 - Pseudonymising `user_location` instead of removing it.

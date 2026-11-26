@@ -166,7 +166,10 @@ pseudonymises the keys of data objects (tool-call arguments, tool inputs, input 
 metadata) as label slots, which the ML layer does not read because it took 22 of 59 common
 field names for entities. Slice 22 pseudonymises `enum`, `const`, `default` and `examples` as
 label slots, and `title` and `$comment` as text. Still open after both: an option to forward a
-field unchanged. Slice 21 is done as described here.
+field unchanged. Both slices are done as described here. Slice 22 follows only the JSON Schema
+keywords that hold subschemas in its table; a value under another keyword (draft-07
+`dependencies`, `contentSchema`, `x-` extensions) is still forwarded, and the audit still
+rejects it when it is detected elsewhere.
 
 **Structured output answers are restored without JSON escaping** (found while specifying slice
 22). An OpenAI `message.content` under a `json_schema` `response_format`, or an Anthropic text

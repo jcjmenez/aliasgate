@@ -621,3 +621,140 @@ async def test_a_tool_use_key_that_only_a_contextual_detector_finds_is_forwarded
         assert _sent(route)["messages"][1]["content"][0]["input"] == {"owner": "x"}
         response = await client.post(MESSAGES, json=_request("the owner"), headers=HEADERS)
         assert _sent(route)["messages"][0]["content"] == "the [PERSON_1]"
+
+
+# Schema values (slice 22)
+
+
+def _owner_schema(**owner: Any) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {"owner": {"type": "string", **owner}},
+        "required": ["owner"],
+    }
+
+
+def _owner_request(text: str, **owner: Any) -> dict[str, Any]:
+    tool = {
+        "name": "assign",
+        "input_schema": _owner_schema(**owner),
+        "input_examples": [{"owner": "Juan P\u00e9rez"}],
+    }
+    return _request(text, tools=[tool])
+
+
+@pytest.mark.parametrize("path", [MESSAGES, COUNT_TOKENS])
+async def test_an_enum_value_repeated_in_input_examples_reaches_the_upstream_as_one_placeholder(
+    path: str, client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    answer = _message(_text("ok")) if path == MESSAGES else {"input_tokens": 42}
+    route = upstream.post(f"{ANTHROPIC}{path}").respond(json=answer)
+    request = _owner_request("Asigna el ticket.", enum=["Juan P\u00e9rez", "Ana Ruiz"])
+    if path == COUNT_TOKENS:
+        request.pop("max_tokens")
+    response = await client.post(path, json=request, headers=HEADERS)
+
+    assert response.status_code == 200
+    tool = _sent(route)["tools"][0]
+    assert tool["input_schema"]["properties"]["owner"]["enum"] == ["[PERSON_1]", "Ana Ruiz"]
+    assert tool["input_examples"] == [{"owner": "[PERSON_1]"}]
+    raw = route.calls.last.request.content.decode()
+    for value in ("Juan", "P\u00e9rez"):
+        assert value not in raw
+
+
+async def test_a_detected_enum_value_named_in_the_text_reaches_the_upstream_as_a_placeholder(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    tool_use = {
+        "type": "tool_use",
+        "id": "toolu_example01",
+        "name": "assign",
+        "input": {"owner": "[PERSON_1]"},
+    }
+    route = upstream.post(f"{ANTHROPIC}{MESSAGES}").respond(json=_message(tool_use))
+    schema = _owner_schema(enum=["Juan P\u00e9rez"])
+    request = _request(
+        "Asigna el ticket a Juan P\u00e9rez.", tools=[{"name": "assign", "input_schema": schema}]
+    )
+    response = await client.post(MESSAGES, json=request, headers=HEADERS)
+    assert response.status_code == 200
+    assert _sent(route)["tools"][0]["input_schema"]["properties"]["owner"]["enum"] == ["[PERSON_1]"]
+    assert response.json()["content"][0]["input"] == {"owner": "Juan P\u00e9rez"}
+
+
+@pytest.mark.parametrize("path", [MESSAGES, COUNT_TOKENS])
+async def test_a_detected_enum_value_in_the_output_schema_reaches_the_upstream_as_a_placeholder(
+    path: str, client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    answer = _message(_text('{"owner": "[PERSON_1]"}')) if path == MESSAGES else {"input_tokens": 9}
+    route = upstream.post(f"{ANTHROPIC}{path}").respond(json=answer)
+    output_config = {
+        "format": {"type": "json_schema", "schema": _owner_schema(enum=["Juan P\u00e9rez"])}
+    }
+    request = _request("Asigna el ticket a Juan P\u00e9rez.", output_config=output_config)
+    if path == COUNT_TOKENS:
+        request.pop("max_tokens")
+    response = await client.post(path, json=request, headers=HEADERS)
+    assert response.status_code == 200
+    schema = _sent(route)["output_config"]["format"]["schema"]
+    assert schema["properties"]["owner"]["enum"] == ["[PERSON_1]"]
+    if path == MESSAGES:
+        assert json.loads(response.json()["content"][0]["text"]) == {"owner": "Juan P\u00e9rez"}
+
+
+@pytest.mark.parametrize(
+    ("keyword", "value", "expected"),
+    [
+        ("const", "maria.lopez@example.org", "[EMAIL_1]"),
+        ("default", "maria.lopez@example.org", "[EMAIL_1]"),
+        ("examples", ["maria.lopez@example.org"], ["[EMAIL_1]"]),
+        ("title", "Mail maria.lopez@example.org", "Mail [EMAIL_1]"),
+        ("$comment", "Mail maria.lopez@example.org", "Mail [EMAIL_1]"),
+    ],
+)
+async def test_a_detected_value_in_a_schema_keyword_reaches_the_upstream_as_a_placeholder(
+    keyword: str, value: Any, expected: Any, client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post(f"{ANTHROPIC}{MESSAGES}").respond(json=_message(_text("ok")))
+    schema = _owner_schema(**{keyword: value})
+    request = _request("hello", tools=[{"name": "assign", "input_schema": schema}])
+    response = await client.post(MESSAGES, json=request, headers=HEADERS)
+    assert response.status_code == 200
+    assert _sent(route)["tools"][0]["input_schema"]["properties"]["owner"][keyword] == expected
+
+
+async def test_a_request_whose_schemas_hold_no_detected_value_is_forwarded_as_before(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post(f"{ANTHROPIC}{MESSAGES}").respond(json=_message(_text("ok")))
+    schema = _owner_schema(enum=["admin", "viewer"], default="viewer", title="Role")
+    tool = {"name": "assign", "input_schema": schema, "input_examples": [{"owner": "admin"}]}
+    output_config = {"format": {"type": "json_schema", "schema": {"type": "object", "title": "A"}}}
+    request = _request("hello", tools=[tool], output_config=output_config)
+    response = await client.post(MESSAGES, json=request, headers=HEADERS)
+    assert response.status_code == 200
+    sent = _sent(route)
+    assert sent["tools"] == request["tools"]
+    assert sent["output_config"] == request["output_config"]
+
+
+async def test_an_enum_value_only_a_contextual_detector_finds_is_forwarded_unless_text_has_it(
+    make_client: ClientFactory, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post(f"{ANTHROPIC}{MESSAGES}").respond(json=_message(_text("ok")))
+    engine = Pseudonymizer([], contextual=[WordListDetector({"admin": "PERSON"}, name="context")])
+    tool = {"name": "assign", "input_schema": _owner_schema(enum=["admin", "viewer"])}
+    async with make_client(pseudonymizer=engine) as client:
+        request = _request("Crea el usuario.", tools=[tool])
+        assert (await client.post(MESSAGES, json=request, headers=HEADERS)).status_code == 200
+        enum = _sent(route)["tools"][0]["input_schema"]["properties"]["owner"]["enum"]
+        assert enum == ["admin", "viewer"]
+        request = _request("Crea el usuario admin.", tools=[tool])
+        assert (await client.post(MESSAGES, json=request, headers=HEADERS)).status_code == 200
+        sent = _sent(route)
+        assert sent["messages"][0]["content"] == "Crea el usuario [PERSON_1]."
+        assert sent["tools"][0]["input_schema"]["properties"]["owner"]["enum"] == [
+            "[PERSON_1]",
+            "viewer",
+        ]

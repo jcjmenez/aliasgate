@@ -557,19 +557,22 @@ class PreparedRequest:
     def apply(self, new_texts: Sequence[str]) -> None: ...
 ```
 
-A **label slot** holds a short value written as structure rather than prose: today, the key of
-a data object. Contextual detectors (the ML layer) do not run on it (§4.1). The keys of data
-objects (tool-call arguments, tool inputs, input examples and OpenAI `metadata`) are label
-slots, and their objects are renamed in place by a finaliser that keeps the key order. When two
+A **label slot** holds a short value written as structure rather than prose: the key of a data
+object, or a schema value. Contextual detectors (the ML layer) do not run on it (§4.1). The keys
+of data objects (tool-call arguments, tool inputs, input examples and OpenAI `metadata`) are
+label slots, and their objects are renamed in place by a finaliser that keeps the key order.
+The `enum`, `const`, `default` and `examples` strings of tool and output schemas are label
+slots too; schema keys never are slots. When two
 keys of one object would become the same text (`ACME` and `Acme` both `[ORG_1]`), `apply` raises
 `MalformedRequestError` naming the object's position and no key, because merging them would
 lose a value.
 
 Slot order is part of the contract, because placeholder numbering follows it. The order is
 always: system content first, then messages in array order, and inside a message its name and
-then its parts in array order, then tool definitions, their input examples and output schemas
-(so adding a tool does not renumber the conversation), then the request's stop sequences,
-metadata and prompt cache key last. Inside tool-call arguments, tool inputs, input examples and
+then its parts in array order, then tool definitions, their input examples, output schemas and
+schema values (so adding a tool does not renumber the conversation), then the request's stop
+sequences, metadata and prompt cache key last. Schema values come after every description, so
+the slots of a request without them are unchanged. Inside tool-call arguments, tool inputs, input examples and
 metadata, each key comes right before its value, depth-first, keys in insertion order. A key
 that holds no detected value numbers nothing, so the numbering of a request changes only when a
 key holds a detected value.
@@ -582,8 +585,8 @@ key holds a detected value.
 | Tool results | yes | n/a |
 | Tool-call arguments (OpenAI `arguments`, Anthropic `tool_use` input) | yes: parse the JSON, process every key and string value (keys as label slots), serialise with `json.dumps(obj, ensure_ascii=False, separators=(",", ":"))`; if parsing fails treat the raw string as text | yes: `restore(..., json_escape=True)` on the raw JSON string, or plain `restore` on every key and string value when the API delivers a parsed object, never merging two keys |
 | Message names (OpenAI `messages[].name`, except for the `function` role, where it names the function) | yes | n/a |
-| Tool definitions | only values under a `description` key (policy `tool_definitions`, default on); names, parameter names and `enum`, `const`, `default`, `examples` and `title` values are never changed | n/a |
-| Tool input examples (Anthropic `input_examples`) and output schemas (OpenAI `response_format`, Anthropic `output_config`) | with policy `tool_definitions`: every key and every string of the examples (keys as label slots, pseudonymised), and the values under a `description` key of the schemas | n/a |
+| Tool definitions | with policy `tool_definitions` (default on): the strings under a `description` key, and in each tool's schema (OpenAI `function.parameters` and legacy `functions[].parameters`, Anthropic `input_schema`) the `title` and `$comment` strings, and as label slots the `enum`, `const`, `default` and `examples` strings, following only the keywords that hold subschemas; names, property names and every other keyword are never changed | n/a (a placeholder the model emits from an `enum` is restored with the tool call or the text holding it) |
+| Tool input examples (Anthropic `input_examples`) and output schemas (OpenAI `response_format`, Anthropic `output_config`) | with policy `tool_definitions`: every key and every string of the examples (keys as label slots, pseudonymised); in the output schemas, the strings under a `description` key, the `title` and `$comment` strings, and as label slots the `enum`, `const`, `default` and `examples` strings | n/a |
 | Stop sequences (OpenAI `stop`, Anthropic `stop_sequences`) | yes | yes: Anthropic `stop_sequence`, in the response and in the stream's `message_delta` |
 | OpenAI `metadata` and `prompt_cache_key` | yes: each metadata key (a label slot, pseudonymised) and its value | n/a |
 | Other keys (schema property names, `$defs` names, keywords, message fields, provider options) | never changed; a detected value in one makes the leak audit reject the request (§8) | n/a |

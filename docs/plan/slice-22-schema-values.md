@@ -127,6 +127,54 @@ placeholders in `enum` values make it likelier to show. The dialects' `restore_r
 not know the request's output format, so a fix changes that contract. It is recorded in
 backlog §10 as its own item.
 
+## Decisions made while implementing
+
+- **Two more expectations changed (asked, 2026-11-26).** Slice 21, merged after this spec was
+  written, added two tests that list exactly which slots of the full fixtures are labels:
+  `test_argument_and_metadata_keys_are_the_only_label_slots` (OpenAI) and
+  `test_a_full_request_marks_exactly_the_tool_use_keys_as_labels` (Anthropic). Under decision 1
+  the fixtures' `enum` values (`enum value`, `Alice Johnson`) are labels too. The maintainer
+  chose to extend both lists with that value and rename the tests
+  `test_argument_and_metadata_keys_and_schema_values_are_the_only_label_slots` and
+  `test_a_full_request_marks_exactly_the_tool_use_keys_and_schema_values_as_labels`. Running the
+  `main` test tree against the new code fails exactly these 2 tests and the 7 listed under Tests.
+- **The walk** keeps one generator per schema object on an explicit stack, like
+  `slots_for_keys_and_strings`. The strings of an `enum`, `const`, `default` or `examples` value
+  come from the walk behind `slots_for_json_strings`, which also gives the key holding each
+  string, so a string stored directly under `description` is skipped there. `items` is in both
+  the object row and the array row of the table.
+- **Keywords outside the table are not followed**: draft-07 `dependencies`, `contentSchema`,
+  `x-` extensions. A value under them is forwarded, and the audit still rejects it when it is
+  detected elsewhere. Backlog §10 says so.
+- **Tests beyond the list:** every subschema keyword on its own (so dropping any of them fails
+  a test), every structural keyword, a wrong shape under each kind of keyword, a deep value
+  inside `default`, slots writing back where they were read, the labels of each dialect, tools
+  without a `parameters` or `input_schema` object, and output formats without a schema object.
+  The property's generator was probed before trusting it: in 2,000 draws it built properties
+  named like keywords, `description` strings inside values, both forms of `items` and wrong
+  shapes under every kind of keyword. It passed with 20,000 examples.
+- **Mutation checks.** The mutations listed under Tests made a test fail: 29 mutants, since
+  each of the 21 subschema keywords was dropped on its own and the order and policy mutations
+  were made once per dialect. So did 21 more: `$comment`, `const`, `default` and `examples`
+  each dropped, label slots written as text slots, string or container values skipped, a
+  non-string `title` read, keys walked out of order, map values, array items and object
+  subschemas taken without checking they are objects, the root left unchecked, a recursive
+  walk, each of the five dialect schemas dropped, an OpenAI `function` that is not an object
+  read, and Anthropic schema values put before the input examples. 50 mutants, none survived.
+- **ML check (real GLiNER, default model, offline).** Through the gateway, the three cases of
+  "Found while specifying" behave as described: with `Crea el usuario.` both `enum`s are
+  forwarded unchanged; with `"role": "admin"` in a `tool_use` input the first `enum` becomes
+  `["[PERSON_2]", "viewer", "Engineering"]`; with `Asigna el ticket a Ana Ruiz.` the second
+  becomes `["[PERSON_1]", "Luis Gil"]`. The 6 `ml` tests pass.
+- **Found, not fixed here (predates this slice).** With the ML layer on, a tool described as
+  `Creates a user.` made GLiNER take `user` for a person. The description becomes
+  `Creates a [PERSON_2].`, and the leak audit then finds `user` in the message field
+  `"role": "user"`, which is never a slot, and rejects the request with `leak_audit_failed`.
+  Any request is rejected whenever the ML layer takes a word that is also a structural value
+  (`user`, `assistant`, `system`, `tool`) for an entity. Nothing leaks, but such requests
+  cannot be sent.
+- **The manual check was not run.** No real-provider request was sent for this slice.
+
 ## Dependencies to add
 
 None.

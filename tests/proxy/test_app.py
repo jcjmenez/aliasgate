@@ -772,3 +772,138 @@ async def test_the_engine_receives_the_labels_of_the_request(
         assert sent["metadata"] == {"owner": "y"}
         assert (await client.post(CHAT, json=chat_request("the owner"))).status_code == 200
         assert _sent(route)["messages"][0]["content"] == "the [PERSON_1]"
+
+
+# Schema values (slice 22)
+
+
+def _owner_tool(**owner: Any) -> dict[str, Any]:
+    parameters = {
+        "type": "object",
+        "properties": {"owner": {"type": "string", **owner}},
+        "required": ["owner"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "function",
+        "function": {"name": "assign", "strict": True, "parameters": parameters},
+    }
+
+
+def _sent_owner(route: respx.Route) -> dict[str, Any]:
+    owner: dict[str, Any] = _sent(route)["tools"][0]["function"]["parameters"]["properties"][
+        "owner"
+    ]
+    return owner
+
+
+async def test_schema_values_reach_the_upstream_pseudonymised_and_the_tool_call_comes_back_real(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "assign", "arguments": '{"owner": "[PERSON_1]"}'},
+    }
+    route = upstream.post(CHAT).respond(json=chat_response(None, tool_calls=[call]))
+    tool = _owner_tool(enum=["Juan P\u00e9rez", "Ana Ruiz"], default="maria.lopez@example.org")
+    body = chat_request("Asigna el ticket a Juan P\u00e9rez.", tools=[tool])
+    response = await client.post(CHAT, json=body)
+
+    assert response.status_code == 200
+    assert _sent_owner(route) == {
+        "type": "string",
+        "enum": ["[PERSON_1]", "Ana Ruiz"],
+        "default": "[EMAIL_1]",
+    }
+    raw = route.calls.last.request.content.decode()
+    for value in ("Juan", "P\u00e9rez", "maria.lopez"):
+        assert value not in raw
+    arguments = response.json()["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+    assert json.loads(arguments) == {"owner": "Juan P\u00e9rez"}
+
+
+@pytest.mark.parametrize("text", ["Crea el usuario.", "Asigna el ticket a Juan P\u00e9rez."])
+async def test_a_detected_enum_value_reaches_the_upstream_as_a_placeholder(
+    text: str, client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post(CHAT).respond(json=chat_response("ok"))
+    tool = _owner_tool(enum=["Juan P\u00e9rez", "Ana Ruiz"])
+    response = await client.post(CHAT, json=chat_request(text, tools=[tool]))
+    assert response.status_code == 200
+    assert _sent_owner(route)["enum"] == ["[PERSON_1]", "Ana Ruiz"]
+
+
+@pytest.mark.parametrize(
+    ("keyword", "value", "expected"),
+    [
+        ("const", "maria.lopez@example.org", "[EMAIL_1]"),
+        ("default", "maria.lopez@example.org", "[EMAIL_1]"),
+        ("examples", ["maria.lopez@example.org"], ["[EMAIL_1]"]),
+        ("title", "Mail maria.lopez@example.org", "Mail [EMAIL_1]"),
+        ("$comment", "Mail maria.lopez@example.org", "Mail [EMAIL_1]"),
+    ],
+)
+async def test_a_detected_value_in_a_schema_keyword_reaches_the_upstream_as_a_placeholder(
+    keyword: str, value: Any, expected: Any, client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post(CHAT).respond(json=chat_response("ok"))
+    response = await client.post(
+        CHAT, json=chat_request("hello", tools=[_owner_tool(**{keyword: value})])
+    )
+    assert response.status_code == 200
+    assert _sent_owner(route)[keyword] == expected
+
+
+async def test_a_detected_enum_value_in_the_response_format_reaches_the_upstream_as_a_placeholder(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post(CHAT).respond(json=chat_response('{"owner": "[PERSON_1]"}'))
+    schema = {
+        "type": "object",
+        "properties": {"owner": {"type": "string", "enum": ["Juan P\u00e9rez"]}},
+        "required": ["owner"],
+        "additionalProperties": False,
+    }
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {"name": "assignment", "strict": True, "schema": schema},
+    }
+    body = chat_request("Asigna el ticket a Juan P\u00e9rez.", response_format=response_format)
+    response = await client.post(CHAT, json=body)
+    assert response.status_code == 200
+    sent = _sent(route)["response_format"]["json_schema"]
+    assert sent["schema"]["properties"]["owner"]["enum"] == ["[PERSON_1]"]
+    assert sent["name"] == "assignment"
+    assert json.loads(_content(response)) == {"owner": "Juan P\u00e9rez"}
+
+
+async def test_a_request_whose_schemas_hold_no_detected_value_is_forwarded_as_before(
+    client: httpx.AsyncClient, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post(CHAT).respond(json=chat_response("ok"))
+    tool = _owner_tool(enum=["admin", "viewer"], default="viewer", title="Role", examples=["admin"])
+    schema = {"type": "object", "title": "Answer", "$comment": "plain", "properties": {}}
+    response_format = {"type": "json_schema", "json_schema": {"name": "a", "schema": schema}}
+    body = chat_request("hello", tools=[tool], response_format=response_format)
+    response = await client.post(CHAT, json=body)
+    assert response.status_code == 200
+    sent = _sent(route)
+    assert sent["tools"] == body["tools"]
+    assert sent["response_format"] == body["response_format"]
+
+
+async def test_an_enum_value_only_a_contextual_detector_finds_is_forwarded_unless_text_has_it(
+    make_client: ClientFactory, upstream: respx.MockRouter
+) -> None:
+    route = upstream.post(CHAT).respond(json=chat_response("ok"))
+    engine = Pseudonymizer([], contextual=[WordListDetector({"admin": "PERSON"}, name="context")])
+    tool = _owner_tool(enum=["admin", "viewer"])
+    async with make_client(pseudonymizer=engine) as client:
+        response = await client.post(CHAT, json=chat_request("Crea el usuario.", tools=[tool]))
+        assert response.status_code == 200
+        assert _sent_owner(route)["enum"] == ["admin", "viewer"]
+        body = chat_request("Crea el usuario admin.", tools=[tool])
+        assert (await client.post(CHAT, json=body)).status_code == 200
+        assert _sent(route)["messages"][0]["content"] == "Crea el usuario [PERSON_1]."
+        assert _sent_owner(route)["enum"] == ["[PERSON_1]", "viewer"]

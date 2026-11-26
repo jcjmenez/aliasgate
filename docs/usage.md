@@ -534,8 +534,18 @@ It also pseudonymises the participant name of an OpenAI message (`messages[].nam
 sequences (OpenAI `stop`, Anthropic `stop_sequences`), the keys and values of OpenAI `metadata`
 and `prompt_cache_key`. With `policy.tool_definitions` (on by default) it pseudonymises the
 `description` values of tool definitions and of output schemas (OpenAI `response_format`,
-Anthropic `output_config`), and every key and string of an Anthropic tool's `input_examples`.
+Anthropic `output_config`), the schema values of both (`title`, `$comment`, `enum`, `const`,
+`default` and `examples`), and every key and string of an Anthropic tool's `input_examples`.
 When an Anthropic answer stops at a stop sequence, the `stop_sequence` it repeats is restored.
+
+Schema values are read like keys (below): `enum`, `const`, `default` and `examples` values are
+replaced when the dictionary or the rules detect them, or when the same value is detected
+elsewhere in the request, but the ML layer does not read them. `title` and `$comment` are prose,
+like `description`, and every layer reads them. A model constrained to an `enum` then emits the
+placeholder, such as `[PERSON_1]`, and the answer comes back with the real value, as every tool
+call does. Two `enum` values that differ only in case (`ACME`, `Acme`) become one placeholder,
+and both come back as the first form. A schema that holds no detected value is forwarded as
+written.
 
 The keys of tool-call arguments (OpenAI `arguments`, Anthropic `tool_use` inputs), of input
 examples and of `metadata` are pseudonymised like their values, so a map such as
@@ -548,8 +558,9 @@ holds no detected value is forwarded as written.
 
 These fields are forwarded as they are:
 
-- tool and function names, parameter names (schema property names), `$defs` names, and the
-  `enum`, `const`, `default`, `examples` and `title` values of tool and output schemas;
+- tool and function names, parameter names (schema property names) and `$defs` names;
+- every schema keyword other than those above, such as `type`, `pattern`, `format`, `required`
+  and `$ref`;
 - the keys of every other object: message fields, schema keywords, provider options;
 - the `name` of a message with the `function` role, which names the function;
 - ids such as `tool_call_id`, `container` or `user_profile_id`;
@@ -584,7 +595,7 @@ of the request also holds.
 | `unknown_endpoint` | 404 | `rejected` | The method and path are neither a route nor a passthrough entry. `GET /metrics` answers this when metrics are off. | Use a supported route (section 4), or add a passthrough entry for an endpoint without customer data. |
 | `request_too_large` | 413 | `rejected` | The body is larger than `listen.max_request_bytes` (10 MiB). | Raise the limit, or send less. |
 | `unsupported_content` | 422 | `rejected` | Content the gateway cannot inspect (image, audio, document, file, an unknown block type) under `policy.unsupported_content: block`; the message names the kind. | Remove it, or set `pass` knowing it is forwarded unprotected. |
-| `leak_audit_failed` | 500 | `rejected` | A detected value was still somewhere in the outbound body. Typical causes: a field or key forwarded unchanged (tool names, a schema property name, a schema `enum` value, `model`); `propagate: false`; a variant with the same key that propagation does not replace (`STRASSE` for `Straße`, decomposed accents, full-width letters). | Move the value out of that field, turn propagation on, or write the value consistently. `policy.leak_audit: false` turns the audit off, which removes the last check before data leaves. |
+| `leak_audit_failed` | 500 | `rejected` | A detected value was still somewhere in the outbound body. Typical causes: a field or key forwarded unchanged (tool names, `model`, a schema property name holding a detected value, such as a property called `Juan Pérez` when the text names him); `propagate: false`; a variant with the same key that propagation does not replace (`STRASSE` for `Straße`, decomposed accents, full-width letters). | Move the value out of that field, turn propagation on, or write the value consistently. `policy.leak_audit: false` turns the audit off, which removes the last check before data leaves. |
 | `pseudonymization_failed` | 500 | `gateway_error` | A detector raised; the log line names it. | Check the `request failed` log line (`detector`); for the ML detector, its installation and memory. |
 | `internal_error` | 500 | `gateway_error` | An unexpected failure in the gateway, the leak audit itself included. Nothing was forwarded. | Look up the log lines by request id, and report the exception class. |
 | `restoration_failed` | 502 | `gateway_error` | The provider's answer could not be restored; it is never returned un-restored. | Look up the log lines by request id, and report the exception class. |

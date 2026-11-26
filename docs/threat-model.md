@@ -77,14 +77,15 @@ These are known and not fully solved. A deployment must accept or mitigate each 
    placeholder beyond the tolerant pattern. The user then sees a placeholder. This is a visible
    failure, not a leak; it is counted in metrics.
 9. **Fields forwarded unchanged.** The gateway pseudonymises the request fields that carry
-   text for the model, message names, stop sequences and metadata included, and the keys of
-   the objects that hold data: tool-call arguments, tool inputs, input examples and metadata.
-   Some fields are sent as they are ([usage](usage.md#fields-forwarded-unchanged)): tool and
-   function names, parameter names, the `enum`, `const`, `default`, `examples` and `title`
-   values of schemas, the keys of other objects, and ids. A value detected elsewhere in the
-   request that also appears in one of them, as a value or as a key, makes the leak audit
-   reject the request; a value that appears only there is sent unchanged. The end user's
-   approximate location is removed by default (`policy.strip_user_location`).
+   text for the model, message names, stop sequences and metadata included, the keys of the
+   objects that hold data (tool-call arguments, tool inputs, input examples and metadata), and
+   the schema values of tool and output schemas (`title`, `$comment`, `enum`, `const`,
+   `default`, `examples`). Some fields are sent as they are
+   ([usage](usage.md#fields-forwarded-unchanged)): tool and function names, property names,
+   ids, and the keys of objects that are not data. A value detected elsewhere in the request
+   that also appears in one of them, as a value or as a key, makes the leak audit reject the
+   request; a value that appears only there is sent unchanged. The end user's approximate
+   location is removed by default (`policy.strip_user_location`).
 
 ## Security invariants
 

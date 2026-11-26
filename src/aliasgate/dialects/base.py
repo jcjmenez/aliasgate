@@ -300,6 +300,82 @@ def slots_for_keys_and_strings(
     return slots
 
 
+_SCHEMA_TEXTS: Final = frozenset({"title", "$comment"})
+_SCHEMA_VALUES: Final = frozenset({"enum", "const", "default", "examples"})
+_SCHEMA_MAPS: Final = frozenset(
+    {"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"}
+)
+_SCHEMA_OBJECTS: Final = frozenset(
+    {
+        "items",
+        "additionalItems",
+        "additionalProperties",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        "contains",
+        "propertyNames",
+        "not",
+        "if",
+        "then",
+        "else",
+    }
+)
+_SCHEMA_ARRAYS: Final = frozenset({"items", "prefixItems", "allOf", "anyOf", "oneOf"})
+
+
+def _label(slot: Slot) -> Slot:
+    return Slot(slot.get, slot.set, label=True)
+
+
+def _schema_steps(schema: dict[str, Any]) -> Iterator[Slot | dict[str, Any]]:
+    """The slots of one schema object's own keywords, and its subschemas, in key order."""
+    for key in list(schema):
+        value = schema[key]
+        if key in _SCHEMA_TEXTS:
+            if isinstance(value, str):
+                yield key_slot(schema, key)
+        elif key in _SCHEMA_VALUES:
+            if isinstance(value, str):
+                yield _label(key_slot(schema, key))
+            elif isinstance(value, dict | list):
+                # A string under `description` is already a slot as a tool description.
+                yield from (
+                    _label(slot) for slot, at in _string_slots(value) if at != "description"
+                )
+        elif key in _SCHEMA_MAPS and isinstance(value, dict):
+            yield from (item for item in value.values() if isinstance(item, dict))
+        elif key in _SCHEMA_OBJECTS and isinstance(value, dict):
+            yield value
+        elif key in _SCHEMA_ARRAYS and isinstance(value, list):
+            yield from (item for item in value if isinstance(item, dict))
+
+
+def slots_for_schema_values(schema: object) -> list[Slot]:
+    """The slots of one JSON Schema: `title` and `$comment` strings as text slots, and the
+    strings of `enum`, `const`, `default` and `examples` as label slots, depth-first, each
+    schema object in key order.
+
+    Only the keywords that hold subschemas are followed, so a property named like a keyword is
+    a schema. Keys, structural keywords (`type`, `pattern`, `required`, `$ref`...), non-string
+    values and strings stored directly under `description` inside a value are never slots. A
+    schema or subschema that is not an object gives no slot and raises nothing. Iterative, so
+    deeply nested input cannot exhaust the interpreter stack.
+    """
+    if not isinstance(schema, dict):
+        return []
+    slots: list[Slot] = []
+    stack = [_schema_steps(schema)]
+    while stack:
+        step = next(stack[-1], None)
+        if step is None:
+            stack.pop()
+        elif isinstance(step, Slot):
+            slots.append(step)
+        else:
+            stack.append(_schema_steps(step))
+    return slots
+
+
 def restore_all_strings(value: Any, mapping: Mapping) -> Any:
     """Return a copy of a JSON value with `restore` applied to every string value and every
     key, keeping the key order.

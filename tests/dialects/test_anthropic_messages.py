@@ -286,18 +286,19 @@ def test_tool_descriptions_are_slots_and_names_and_schema_property_names_are_not
     tools_before = copy.deepcopy(body["tools"])
     prepared = DIALECT.prepare_request(body, Policy())
     texts = prepared.texts()
-    assert texts[-2:] == [
+    assert texts[-3:] == [
         "Send an email for ACME Corporation.",
         "Recipient, e.g. juan.perez@example.com",
+        "Alice Johnson",
     ]
-    prepared.apply([*texts[:-2], "[D_1]", "[D_2]"])
+    prepared.apply([*texts[:-3], "[D_1]", "[D_2]", "[D_3]"])
     tool = body["tools"][0]
     assert tool["name"] == tools_before[0]["name"]
     assert tool["description"] == "[D_1]"
     properties = tool["input_schema"]["properties"]
     assert list(properties) == ["to", "description"]
     assert properties["to"]["description"] == "[D_2]"
-    assert properties["description"] == {"type": "string", "enum": ["Alice Johnson"]}
+    assert properties["description"] == {"type": "string", "enum": ["[D_3]"]}
     assert tool["input_schema"]["required"] == ["to"]
 
 
@@ -335,6 +336,7 @@ def test_slot_order_is_system_then_messages_then_tools() -> None:
         "Thanks.",
         "Send an email for ACME Corporation.",
         "Recipient, e.g. juan.perez@example.com",
+        "Alice Johnson",
     ]
 
 
@@ -466,10 +468,9 @@ def test_end_to_end_the_same_name_gets_one_placeholder_everywhere() -> None:
     outbound = json.dumps(body, ensure_ascii=False)
     for value in ("Juan", "juan.perez", "ACME", "user-0001"):
         assert value not in outbound
-    # The enum value is a schema value, never a slot: the dictionary term stays.
-    assert body["tools"][0]["input_schema"]["properties"]["description"]["enum"] == [
-        "Alice Johnson"
-    ]
+    # The enum value is a label slot: it takes the placeholder of the system prompt's name.
+    assert body["tools"][0]["input_schema"]["properties"]["description"]["enum"] == ["[PERSON_1]"]
+    assert "Alice" not in outbound
     assert [entity.placeholder for entity in mapping.entities()] == [
         "[ORG_1]",
         "[PERSON_1]",
@@ -623,6 +624,124 @@ def test_user_location_is_removed_with_tool_definitions_off_too() -> None:
     body: dict[str, Any] = {"messages": [], "tools": _web_search_tools()}
     DIALECT.prepare_request(body, Policy(tool_definitions=False))
     assert all("user_location" not in tool for tool in body["tools"])
+
+
+# Schema values (slice 22)
+
+
+def _schema(word: str) -> dict[str, Any]:
+    owner = {"type": "string", "description": f"{word} description", "enum": [f"{word} enum"]}
+    return {"type": "object", "title": f"{word} title", "properties": {"owner": owner}}
+
+
+def _schema_body() -> dict[str, Any]:
+    return {
+        "messages": [{"role": "user", "content": "text"}],
+        "tools": [
+            {
+                "name": "a",
+                "description": "tool",
+                "input_schema": _schema("tool"),
+                "input_examples": [{"owner": "example"}],
+            },
+            {"type": "web_search_20250305", "name": "web_search"},
+            {"name": "b", "input_schema": _schema("second tool")},
+        ],
+        "output_config": {"format": {"type": "json_schema", "schema": _schema("output")}},
+        "stop_sequences": ["stop"],
+    }
+
+
+def test_schema_values_come_after_the_output_schema_descriptions_and_before_stop_sequences() -> (
+    None
+):
+    assert _texts(_schema_body()) == [
+        "text",
+        "tool",
+        "tool description",
+        "second tool description",
+        "owner",
+        "example",
+        "output description",
+        "tool title",
+        "tool enum",
+        "second tool title",
+        "second tool enum",
+        "output title",
+        "output enum",
+        "stop",
+    ]
+
+
+def test_with_tool_definitions_off_no_schema_value_is_a_slot() -> None:
+    body = _schema_body()
+    original = copy.deepcopy(body)
+    assert _texts(body, Policy(tool_definitions=False)) == ["text", "stop"]
+    assert body == original
+
+
+def test_schema_enum_slots_are_labels_and_title_slots_are_not() -> None:
+    prepared = DIALECT.prepare_request(_schema_body(), Policy())
+    texts = prepared.texts()
+    assert sorted(texts[index] for index in prepared.labels()) == [
+        "output enum",
+        "owner",
+        "second tool enum",
+        "tool enum",
+    ]
+
+
+def test_schema_value_slots_write_back_into_each_schema() -> None:
+    body = _schema_body()
+    prepared = DIALECT.prepare_request(body, Policy())
+    prepared.apply([text.upper() for text in prepared.texts()])
+    assert body["tools"][2]["input_schema"]["title"] == "SECOND TOOL TITLE"
+    assert body["tools"][1] == {"type": "web_search_20250305", "name": "web_search"}
+    schema = body["output_config"]["format"]["schema"]
+    assert schema["title"] == "OUTPUT TITLE"
+    assert schema["properties"] == {
+        "owner": {"type": "string", "description": "OUTPUT DESCRIPTION", "enum": ["OUTPUT ENUM"]}
+    }
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "a tool",
+        {"type": "web_search_20250305", "name": "web_search", "max_uses": 2},
+        {"name": "f", "input_schema": True},
+        {"name": "f", "input_schema": ["title"]},
+    ],
+)
+def test_a_tool_without_an_input_schema_object_gives_no_schema_slot(tool: Any) -> None:
+    body: dict[str, Any] = {"messages": [], "tools": [tool]}
+    original = copy.deepcopy(body)
+    assert _texts(body) == []
+    assert body == original
+
+
+@pytest.mark.parametrize("output_format", [{"type": "json_schema"}, {"schema": "a schema"}])
+def test_an_output_format_without_a_schema_object_gives_no_schema_slot(
+    output_format: dict[str, Any],
+) -> None:
+    assert _texts({"messages": [], "output_config": {"format": output_format}}) == []
+
+
+def test_an_enum_value_repeated_in_input_examples_gets_one_placeholder_in_both() -> None:
+    owner = {"type": "string", "enum": ["Juan P\u00e9rez", "Ana Ruiz"]}
+    tool = {
+        "name": "assign",
+        "input_schema": {"type": "object", "properties": {"owner": owner}},
+        "input_examples": [{"owner": "Juan P\u00e9rez"}],
+    }
+    body: dict[str, Any] = {
+        "messages": [{"role": "user", "content": "Asigna el ticket."}],
+        "tools": [tool],
+    }
+    mapping = _pseudonymize(body)
+    assert tool["input_examples"] == [{"owner": "[PERSON_1]"}]
+    assert owner["enum"] == ["[PERSON_1]", "Ana Ruiz"]
+    assert [entity.placeholder for entity in mapping.entities()] == ["[PERSON_1]"]
 
 
 # Response side
@@ -781,7 +900,7 @@ def test_tool_use_input_and_input_example_keys_are_the_only_label_slots() -> Non
     assert prepared.labels() == {2, 5, 7, 8}
 
 
-def test_a_full_request_marks_exactly_the_tool_use_keys_as_labels() -> None:
+def test_a_full_request_marks_exactly_the_tool_use_keys_and_schema_values_as_labels() -> None:
     prepared = DIALECT.prepare_request(_load("request_all_blocks.json"), Policy())
     texts = prepared.texts()
     assert [texts[index] for index in sorted(prepared.labels())] == [
@@ -791,6 +910,7 @@ def test_a_full_request_marks_exactly_the_tool_use_keys_as_labels() -> None:
         "lines",
         "urgent",
         "copies",
+        "Alice Johnson",
     ]
 
 

@@ -74,6 +74,12 @@ in place by finalizers, which `prepare_request` now returns. `restore_response` 
 stream's `content_block_start` restore `tool_use` input keys too, and the stream counts
 unresolved placeholders in them.
 
+**Changed in [slice 22](slice-22-schema-values.md).** Under `tool_definitions`, after the `output_config.format`
+descriptions, the schema values of each tool's `input_schema` and then of
+`output_config.format.schema` are slots: `title` and `$comment` as text, and the strings of
+`enum`, `const`, `default` and `examples` as label slots. Tool names, property names and every
+other keyword are still never slots.
+
 Why thinking blocks are not touched: they carry a provider signature over their exact content
 and must be sent back unchanged on later turns. Since the model only ever saw placeholders, a
 thinking block contains placeholders, not real values. The gateway does not restore them in the
