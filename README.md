@@ -108,6 +108,7 @@ regulation. Read the [threat model](https://github.com/jcjmenez/aliasgate/blob/m
 | 20 | Request fields forwarded unchanged (names, metadata, stop sequences, location) | done |
 | 21 | Object keys and label slots (tool-call arguments, tool inputs, metadata) | done |
 | 22 | Schema values (`enum`, `const`, `default`, `examples`, `title`) | done |
+| 23 | Role words (`user`, `assistant`) never replaced on their own | planned |
 
 ## Development
 
