@@ -300,3 +300,26 @@ name linking takes for entities. For parameter names, measure adding role nouns 
 `owner`, `manager`, `contact`, `recipient`, `client`, `vendor`, `team`, `project`) to the common
 and generic word lists of name linking before considering renaming property names, which
 slice 21 left out of scope.
+
+**Role words cut into [slice 23](slice-23-role-words.md)** (2026-11-27). A second reproduction
+through the gateway found the same rejections without the ML layer: a detected name holding a
+role word (`User Group Ltd`, `System Integrators Inc.`, `Ana Tool`) makes the word a variant,
+propagation replaces it in lower case (`tell the user`), and the audit finds it in a role. So
+slice 23 does option B and also puts the six role words on the common word list of name
+linking: 92 of 320 rejections with the ML layer become 4, and every request naming such an
+organisation or person is forwarded. Still open after it, each a rejection and never a leak:
+
+- **The model's name in the text.** `You are Claude, …` with `claude-sonnet-5-5` and
+  `You are built on GPT …` with `gpt-4.1-mini` are rejected on both routes (the 4 left).
+  Allow-listing `Claude` or `GPT` clears them; `Claude` then stays unreplaced on its own in any
+  text, though `Claude Martin` is still detected.
+- **Parameter names.** Measured again with a `<Name> name.` description and the call in the
+  history: 19 of 20 English names rejected on both routes (`customer`, `owner`, `status`,
+  `country`, `product`, ...; not `language`), none in Spanish. The model takes `Customer name`
+  for a person or `Status name` for an organisation, name linking makes the argument key a
+  variant, and the property name and `required` entry keep the word. The nine role nouns above
+  on the common word list cleared exactly those nine; the other ten (`account`, `category`,
+  `channel`, `country`, `department`, `plan`, `priority`, `product`, `region`, `status`) were
+  still rejected, so a word list does not generalise. Allow-listing the name clears it
+  (measured with `customer` and `status`).
+- **Tool names** mentioned in the text (`create_user`, in the first measurement).
