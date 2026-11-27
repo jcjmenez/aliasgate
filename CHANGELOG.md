@@ -7,6 +7,13 @@ change the configuration or the command line.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-27
+
+Object keys and schema values, which 0.7.0 forwarded without reading. The keys of tool-call
+arguments, tool input examples and metadata, and the `enum`, `const`, `default`, `examples`,
+`title` and `$comment` values of tool and output schemas are pseudonymised, and the leak audit
+searches every key.
+
 ### Changed
 
 - The keys of tool-call arguments (OpenAI `arguments`, Anthropic `tool_use` inputs), Anthropic
@@ -238,7 +245,8 @@ it has not run in production yet. Read the threat model before relying on it.
   offline), non-root, with no configuration inside.
 - Documentation: usage, deployment, architecture, threat model, evaluation.
 
-[Unreleased]: https://github.com/jcjmenez/aliasgate/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/jcjmenez/aliasgate/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/jcjmenez/aliasgate/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jcjmenez/aliasgate/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jcjmenez/aliasgate/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jcjmenez/aliasgate/compare/v0.4.0...v0.5.0
