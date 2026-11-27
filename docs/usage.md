@@ -26,11 +26,11 @@ extra. It installs PyTorch and needs about 1.5 GB of memory per process (section
 pip install 'aliasgate[ml]'
 ```
 
-Or run the image. `:0.7.0` has rules and dictionaries; `:0.7.0-ml` also has the ML model, baked
+Or run the image. `:0.8.0` has rules and dictionaries; `:0.8.0-ml` also has the ML model, baked
 into the image so that the container needs no access to Hugging Face:
 
 ```bash
-docker pull ghcr.io/jcjmenez/aliasgate:0.7.0
+docker pull ghcr.io/jcjmenez/aliasgate:0.8.0
 ```
 
 Check the installation:
@@ -117,7 +117,7 @@ prints the warning above; publish the port on loopback unless the network in fro
 trusted:
 
 ```bash
-docker run --rm -p 127.0.0.1:8080:8080 -v "$PWD/aliasgate:/etc/aliasgate:ro" ghcr.io/jcjmenez/aliasgate:0.7.0
+docker run --rm -p 127.0.0.1:8080:8080 -v "$PWD/aliasgate:/etc/aliasgate:ro" ghcr.io/jcjmenez/aliasgate:0.8.0
 ```
 
 Arguments after the image name replace the default command, for example
